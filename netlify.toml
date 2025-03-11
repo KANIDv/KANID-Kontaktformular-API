@@ -1,0 +1,21 @@
+[build]
+  # Das Verzeichnis, aus dem die Site bereitgestellt wird
+  publish = "public"
+  # Der Befehl zum Erstellen der Site
+  command = "npm run build"
+  # Verzeichnis mit Serverless-Funktionen
+  functions = "netlify/functions"
+
+# Umleitung für API-Anfragen
+[[redirects]]
+  from = "/api/*"
+  to = "/.netlify/functions/:splat"
+  status = 200
+
+# Header für CORS-Unterstützung
+[[headers]]
+  for = "/api/*"
+    [headers.values]
+    Access-Control-Allow-Origin = "*"
+    Access-Control-Allow-Methods = "GET, POST, OPTIONS"
+    Access-Control-Allow-Headers = "Content-Type"
