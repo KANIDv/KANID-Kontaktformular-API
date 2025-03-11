@@ -1,0 +1,19 @@
+{
+  "name": "kanid-kontaktformular-api",
+  "version": "1.0.0",
+  "description": "API-Backend für das KANID UG Kontaktformular mit Resend",
+  "scripts": {
+    "build": "mkdir -p public && echo 'Build erfolgreich' > public/build.log",
+    "dev": "netlify dev",
+    "deploy": "netlify deploy --prod"
+  },
+  "dependencies": {
+    "resend": "^2.0.0"
+  },
+  "devDependencies": {
+    "netlify-cli": "^15.0.0"
+  },
+  "engines": {
+    "node": ">=18.x"
+  }
+}
