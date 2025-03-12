@@ -63,12 +63,23 @@ exports.handler = async function(event, context) {
       };
     }
 
-    // Resend API-Schlüssel aus Umgebungsvariablen laden oder festlegen
-    // WICHTIG: In der Netlify-Oberfläche als Umgebungsvariable einstellen!
-    const resendApiKey = process.env.RESEND_API_KEY || 're_VVSm8zv9_4p3YKK891J9LwDdjCBuQFGYc';
+    // Resend API-Schlüssel aus Umgebungsvariablen laden
+    const resendApiKey = process.env.RESEND_API_KEY;
+    if (!resendApiKey) {
+      console.error('RESEND_API_KEY nicht konfiguriert');
+      return {
+        statusCode: 500,
+        headers,
+        body: JSON.stringify({ 
+          error: 'Server-Konfigurationsfehler',
+          message: 'Die E-Mail-Funktion ist nicht korrekt konfiguriert. Bitte kontaktieren Sie den Administrator.'
+        })
+      };
+    }
+    
     const resend = new Resend(resendApiKey);
     
-    // E-Mail-Inhalt formatieren
+    // E-Mail-Inhalt für Besitzer formatieren
     const htmlContent = `
       <h2>Neue Kontaktanfrage über das Formular</h2>
       <p><strong>Name:</strong> ${name}</p>
@@ -80,14 +91,54 @@ exports.handler = async function(event, context) {
       <p><small>Diese Nachricht wurde über das Kontaktformular auf kanid.de gesendet.</small></p>
     `;
     
-    // E-Mail senden
-    const data = await resend.emails.send({
-      from: 'kontaktformular@kanid.de', // Diese Domain muss bei Resend verifiziert sein
-      to: 'info@kanid.de',              // Empfänger-E-Mail
-      reply_to: email,                  // Antworten gehen an den Absender
-      subject: subject,
-      html: htmlContent
-    });
+    // Bestätigungs-E-Mail Inhalt für Absender
+    const confirmationHtml = `
+      <h2>Vielen Dank für Ihre Anfrage an KANID UG</h2>
+      <p>Hallo ${name},</p>
+      <p>wir haben Ihre Anfrage mit folgendem Inhalt erhalten:</p>
+      <hr>
+      <p><strong>Betreff:</strong> ${subject}</p>
+      <p><strong>Nachricht:</strong></p>
+      <p>${message.replace(/\n/g, '<br>')}</p>
+      <hr>
+      <p>Wir werden uns so schnell wie möglich bei Ihnen melden.</p>
+      <p>Mit freundlichen Grüßen,<br>Ihr KANID UG Team</p>
+      <p>
+        <small>
+          KANID UG (haftungsbeschränkt)<br>
+          Holderäckerstraße 3<br>
+          70839 Gerlingen<br>
+          Tel: +49 1520 7921611<br>
+          E-Mail: info@kanid.de<br>
+          Web: <a href="https://www.kanid.de">www.kanid.de</a>
+        </small>
+      </p>
+    `;
+    
+    // E-Mails parallel senden (an info@kanid.de und den Absender)
+    const [adminEmailResult, confirmationEmailResult] = await Promise.all([
+      // E-Mail an Seitenbetreiber
+      resend.emails.send({
+        from: 'kontaktformular@kanid.de', // Diese Domain muss bei Resend verifiziert sein
+        to: 'info@kanid.de',              // Empfänger-E-Mail
+        reply_to: email,                  // Antworten gehen an den Absender
+        subject: subject,
+        html: htmlContent
+      }),
+      
+      // Bestätigungs-E-Mail an Absender
+      resend.emails.send({
+        from: 'info@kanid.de',           // Diese Domain muss bei Resend verifiziert sein 
+        to: email,                       // E-Mail des Absenders
+        subject: `Ihre Anfrage an KANID UG: ${subject}`,
+        html: confirmationHtml
+      })
+    ]);
+    
+    // Prüfen, ob beide E-Mails erfolgreich waren
+    if (!adminEmailResult.id || !confirmationEmailResult.id) {
+      throw new Error('E-Mail konnte nicht gesendet werden');
+    }
     
     // Erfolgreiche Antwort zurückgeben
     return {
@@ -96,7 +147,7 @@ exports.handler = async function(event, context) {
       body: JSON.stringify({ 
         success: true, 
         message: 'Ihre Nachricht wurde erfolgreich gesendet',
-        id: data.id
+        id: adminEmailResult.id
       })
     };
     
