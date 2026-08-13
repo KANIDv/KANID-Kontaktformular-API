@@ -242,6 +242,339 @@ function euro(wert) {
   return new Intl.NumberFormat('de-DE', { style: 'currency', currency: 'EUR' }).format(wert);
 }
 
+function bytesZuB64url(bytes) {
+  let bin = '';
+  const arr = new Uint8Array(bytes);
+  for (let i = 0; i < arr.length; i += 1) bin += String.fromCharCode(arr[i]);
+  return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+function b64urlZuBytes(text) {
+  let s = text.replace(/-/g, '+').replace(/_/g, '/');
+  while (s.length % 4) s += '=';
+  const bin = atob(s);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i += 1) out[i] = bin.charCodeAt(i);
+  return out;
+}
+
+async function hmacSchluessel(geheim) {
+  return crypto.subtle.importKey(
+    'raw',
+    new TextEncoder().encode(geheim),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign', 'verify'],
+  );
+}
+
+async function signiereAuftrag(daten, geheim) {
+  const json = JSON.stringify(daten);
+  const key = await hmacSchluessel(geheim);
+  const sig = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(json));
+  return `${bytesZuB64url(new TextEncoder().encode(json))}.${bytesZuB64url(sig)}`;
+}
+
+async function leseAuftrag(token, geheim) {
+  const teile = String(token || '').split('.');
+  if (teile.length !== 2) return null;
+  const jsonBytes = b64urlZuBytes(teile[0]);
+  const json = new TextDecoder().decode(jsonBytes);
+  const key = await hmacSchluessel(geheim);
+  const ok = await crypto.subtle.verify('HMAC', key, b64urlZuBytes(teile[1]), new TextEncoder().encode(json));
+  if (!ok) return null;
+  try {
+    const daten = JSON.parse(json);
+    if (!daten || !daten.bestellnummer || !daten.email) return null;
+    return daten;
+  } catch {
+    return null;
+  }
+}
+
+function htmlSeite(titel, innen) {
+  return `<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex">
+  <title>${htmlEsc(titel)}</title>
+  <style>
+    body { margin: 0; background: #e9ecee; font-family: Arial, Helvetica, sans-serif; color: #0e2733; }
+    main { max-width: 560px; margin: 40px auto; padding: 28px; background: #fff; border: 1px solid #0e2733; }
+    .mono { font-family: Consolas, "Courier New", monospace; font-size: 11px; letter-spacing: .12em; text-transform: uppercase; color: #1b6ba4; }
+    h1 { font-size: 22px; margin: 8px 0 16px; }
+    p, li { line-height: 1.5; }
+    button { margin-top: 18px; padding: 12px 16px; border: 0; background: #f2c200; color: #0e2733; font-weight: 700; cursor: pointer; }
+  </style>
+</head>
+<body><main>${innen}</main></body>
+</html>`;
+}
+
+const WIDERRUF_TEXT = `Widerrufsrecht
+
+Sie haben das Recht, binnen vierzehn Tagen ohne Angabe von Gründen diesen Vertrag zu widerrufen.
+
+Die Widerrufsfrist beträgt vierzehn Tage ab dem Tag,
+
+- an dem Sie oder ein von Ihnen benannter Dritter, der nicht der Beförderer ist, die Waren in Besitz genommen haben bzw. hat;
+- an dem Sie oder ein von Ihnen benannter Dritter, der nicht der Beförderer ist, die letzte Ware in Besitz genommen haben bzw. hat, wenn Sie mehrere Waren im Rahmen einer einheitlichen Bestellung bestellt haben und diese getrennt geliefert werden;
+- an dem Sie oder ein von Ihnen benannter Dritter, der nicht der Beförderer ist, die letzte Teilsendung oder das letzte Stück in Besitz genommen haben bzw. hat, wenn eine Ware in mehreren Teilsendungen oder Stücken geliefert wird.
+
+Um Ihr Widerrufsrecht auszuüben, müssen Sie uns
+
+KANID UG (haftungsbeschränkt)
+Heinrich-Hertz-Str. 11
+70794 Filderstadt
+Deutschland
+Telefon: +49 1520 7921611
+E-Mail: info@kanid.de
+
+mittels einer eindeutigen Erklärung (z. B. ein mit der Post versandter Brief oder eine E-Mail) über Ihren Entschluss, diesen Vertrag zu widerrufen, informieren. Sie können dafür das beigefügte Muster-Widerrufsformular verwenden, das jedoch nicht vorgeschrieben ist.
+
+Zur Wahrung der Widerrufsfrist reicht es aus, dass Sie die Mitteilung über die Ausübung des Widerrufsrechts vor Ablauf der Widerrufsfrist absenden.
+
+Folgen des Widerrufs
+
+Wenn Sie diesen Vertrag widerrufen, haben wir Ihnen alle Zahlungen, die wir von Ihnen erhalten haben, einschließlich der Lieferkosten (mit Ausnahme der zusätzlichen Kosten, die sich daraus ergeben, dass Sie eine andere Art der Lieferung als die von uns angebotene, günstigste Standardlieferung gewählt haben), unverzüglich und spätestens binnen vierzehn Tagen ab dem Tag zurückzuzahlen, an dem die Mitteilung über Ihren Widerruf dieses Vertrags bei uns eingegangen ist. Für diese Rückzahlung verwenden wir dasselbe Zahlungsmittel, das Sie bei der ursprünglichen Transaktion eingesetzt haben, es sei denn, mit Ihnen wurde ausdrücklich etwas anderes vereinbart; in keinem Fall werden Ihnen wegen dieser Rückzahlung Entgelte berechnet.
+
+Wir können die Rückzahlung verweigern, bis wir die Waren wieder zurückerhalten haben oder bis Sie den Nachweis erbracht haben, dass Sie die Waren zurückgesandt haben, je nachdem, welches der frühere Zeitpunkt ist.
+
+Sie haben die Waren unverzüglich und in jedem Fall spätestens binnen vierzehn Tagen ab dem Tag, an dem Sie uns über den Widerruf dieses Vertrags unterrichten, an uns zurückzusenden oder zu übergeben. Die Frist ist gewahrt, wenn Sie die Waren vor Ablauf der Frist von vierzehn Tagen absenden.
+
+Sie tragen die unmittelbaren Kosten der Rücksendung der Waren.
+
+Sie müssen für einen etwaigen Wertverlust der Waren nur aufkommen, wenn dieser Wertverlust auf einen zur Prüfung der Beschaffenheit, Eigenschaften und Funktionsweise der Waren nicht notwendigen Umgang mit ihnen zurückzuführen ist.
+
+Das Widerrufsrecht gilt für alle Ausführungen, auch für die mit Ihrem Logo.
+
+Das Muster-Widerrufsformular liegt dieser E-Mail als PDF bei und steht unter https://kanid.de/widerruf bereit.`;
+
+function bestellBestaetigungText(daten) {
+  const datum = daten.datum
+    ? new Date(daten.datum + 'T12:00:00').toLocaleDateString('de-DE')
+    : new Date().toLocaleDateString('de-DE');
+  return [
+    `Guten Tag ${daten.name},`,
+    '',
+    'vielen Dank für Ihre Bestellung. Hiermit nehmen wir Ihre Bestellung an; damit ist der Kaufvertrag zustande gekommen.',
+    '',
+    `Bestellnummer: ${daten.bestellnummer}`,
+    `Bestelldatum: ${datum}`,
+    `Artikel: ${daten.artikel} × ${daten.menge} — ${euro(daten.einzelpreis)}`,
+    `Zwischensumme: ${euro(daten.zwischensumme ?? daten.einzelpreis * daten.menge)}`,
+    `Versand (DHL, Deutschland): ${euro(VERSAND_EUR)}`,
+    `Gesamtsumme: ${euro(daten.summe)}`,
+    '',
+    'Alle Preise enthalten die gesetzliche Umsatzsteuer von 19 %.',
+    '',
+    'Zahlungsart: Vorkasse per Überweisung',
+    'Lieferung: Wir fertigen erst nach Ihrer Bestellung. In der Regel ist Ihre Sendung nach 4–6 Werktagen bei Ihnen, spätestens nach 15 Werktagen ab Zahlungseingang. Versand mit DHL.',
+    daten.logo
+      ? 'Bitte senden Sie uns Ihr Logo als SVG, DXF oder PDF an info@kanid.de. Die Fertigung startet, sobald die Datei geprüft und freigegeben ist.'
+      : null,
+    '',
+    WIDERRUF_TEXT,
+    '',
+    'Es gelten unsere AGB für Verbraucher: https://kanid.de/agb-verbraucher',
+    '',
+    'KANID UG (haftungsbeschränkt) · Heinrich-Hertz-Str. 11 · 70794 Filderstadt',
+    'Geschäftsführer: Konstantin Vinogradov',
+    'Amtsgericht Stuttgart HRB 798044 · USt-IdNr. DE451539743',
+    'info@kanid.de · +49 1520 7921611',
+  ].filter((zeile) => zeile !== null).join('\n');
+}
+
+function bestellBestaetigungHtml(daten) {
+  const stand = new Date().toISOString().slice(0, 7);
+  const datum = daten.datum
+    ? new Date(daten.datum + 'T12:00:00').toLocaleDateString('de-DE')
+    : new Date().toLocaleDateString('de-DE');
+
+  return `<!DOCTYPE html>
+<html lang="de">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Bestellbestätigung</title></head>
+<body style="margin:0;padding:0;background:#e9ecee;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" bgcolor="#e9ecee">
+    <tr>
+      <td align="center" style="padding:32px 12px;">
+        <table role="presentation" width="600" cellpadding="0" cellspacing="0" bgcolor="#ffffff" style="width:600px;max-width:600px;background:#ffffff;border:1px solid #0e2733;border-collapse:collapse;">
+          <tr>
+            <td style="padding:22px 24px 18px;border-bottom:1px solid #0e2733;">
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
+                <tr>
+                  <td><img src="https://kanid.de/assets/img/LOGO.png" width="176" alt="KANID" style="display:block;width:176px;height:auto;border:0;"></td>
+                  <td align="right" style="font-family:Consolas,'Courier New',monospace;font-size:11px;letter-spacing:0.1em;text-transform:uppercase;color:#1b6ba4;line-height:1.55;">
+                    Bestellbestätigung<br>${htmlEsc(daten.bestellnummer)}
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:28px 24px 8px;font-family:Consolas,'Courier New',monospace;font-size:11px;letter-spacing:0.14em;text-transform:uppercase;color:#1b6ba4;">Vertrag angenommen</td>
+          </tr>
+          <tr>
+            <td style="padding:0 24px 16px;font-family:Arial,Helvetica,sans-serif;font-size:24px;line-height:1.2;font-weight:700;color:#0e2733;">
+              Ihre Bestellung ist angenommen.
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:0 24px 22px;font-family:Arial,Helvetica,sans-serif;font-size:16px;line-height:1.55;color:#21262a;">
+              Guten Tag ${htmlEsc(daten.name)},<br><br>
+              vielen Dank für Ihre Bestellung. Hiermit nehmen wir Ihre Bestellung an; damit ist der Kaufvertrag zustande gekommen.
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:0 24px 24px;">
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
+                <tr>
+                  ${feldZelle('Bestellnummer', htmlEsc(daten.bestellnummer), '50%')}
+                  ${feldZelle('Bestelldatum', htmlEsc(datum), '50%')}
+                </tr>
+                <tr>
+                  ${feldZelle('Artikel', htmlEsc(daten.artikel), '50%')}
+                  ${feldZelle('Menge', String(daten.menge), '50%')}
+                </tr>
+                <tr>
+                  ${feldZelle('Einzelpreis', euro(daten.einzelpreis), '50%')}
+                  ${feldZelle('Versand DHL', euro(VERSAND_EUR), '50%')}
+                </tr>
+                <tr>
+                  ${feldZelle('Gesamtsumme', euro(daten.summe), '50%')}
+                  ${feldZelle('Zahlungsart', 'Vorkasse per Überweisung', '50%')}
+                </tr>
+                <tr>
+                  <td colspan="2" style="padding:12px;border:1px solid #0e2733;font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.5;color:#0e2733;">
+                    Alle Preise enthalten 19 % Umsatzsteuer. Lieferung in der Regel nach 4–6 Werktagen, spätestens nach 15 Werktagen ab Zahlungseingang. Versand mit DHL.
+                    ${daten.logo ? '<br><br>Bitte senden Sie uns Ihr Logo als SVG, DXF oder PDF an info@kanid.de. Die Fertigung startet, sobald die Datei geprüft ist.' : ''}
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:0 24px 24px;font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.55;color:#0e2733;white-space:pre-wrap;">${htmlEsc(WIDERRUF_TEXT)}</td>
+          </tr>
+          <tr>
+            <td style="padding:0 24px 28px;font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.55;color:#21262a;">
+              Das Muster-Widerrufsformular liegt als PDF bei.<br>
+              AGB für Verbraucher: <a href="https://kanid.de/agb-verbraucher" style="color:#1b6ba4;">kanid.de/agb-verbraucher</a>
+              <br><br>Mit freundlichen Grüßen<br><strong>Konstantin Vinogradov</strong>
+            </td>
+          </tr>
+          <tr>
+            <td>
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
+                <tr>
+                  ${feldZelle('KANID UG', 'Filderstadt', '25%')}
+                  ${feldZelle('Blatt', '01 / 01', '25%')}
+                  ${feldZelle('Stand', stand, '25%')}
+                  ${feldZelle('Maßstab', '1:1', '25%')}
+                </tr>
+                <tr>
+                  ${feldZelle('Benennung', 'Bestellbestätigung', '50%')}
+                  ${feldZelle('Zeichnungsnummer', htmlEsc(daten.bestellnummer), '50%')}
+                </tr>
+              </table>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>`;
+}
+
+async function pdfAnhang() {
+  const antwort = await fetch('https://kanid.de/assets/widerrufsformular.pdf');
+  if (!antwort.ok) return null;
+  const buf = await antwort.arrayBuffer();
+  let bin = '';
+  const bytes = new Uint8Array(buf);
+  for (let i = 0; i < bytes.length; i += 1) bin += String.fromCharCode(bytes[i]);
+  return {
+    filename: 'widerrufsformular.pdf',
+    content: btoa(bin),
+  };
+}
+
+async function handleBestaetigen(request, env, url) {
+  const geheim = env.BESTELL_SECRET || env.RESEND_API_KEY;
+  if (!geheim) {
+    return new Response(htmlSeite('Fehler', '<p>Kein Geheimnis konfiguriert.</p>'), {
+      status: 500,
+      headers: { 'Content-Type': 'text/html; charset=UTF-8' },
+    });
+  }
+
+  const token = request.method === 'POST'
+    ? (await request.formData()).get('t')
+    : url.searchParams.get('t');
+  const daten = await leseAuftrag(token, geheim);
+
+  if (!daten) {
+    return new Response(htmlSeite('Ungültig', '<p class="mono">Link ungültig</p><h1>Dieser Bestätigungslink gilt nicht.</h1><p>Er ist beschädigt oder gehört zu einem anderen Schlüssel.</p>'), {
+      status: 403,
+      headers: { 'Content-Type': 'text/html; charset=UTF-8', 'X-Robots-Tag': 'noindex' },
+    });
+  }
+
+  if (request.method === 'GET') {
+    const innen = `
+      <p class="mono">Zahlungseingang</p>
+      <h1>Bestellbestätigung senden?</h1>
+      <p>Nur klicken, wenn die Überweisung <strong>${htmlEsc(daten.bestellnummer)}</strong> wirklich da ist. Damit nehmen Sie den Vertrag an.</p>
+      <ul>
+        <li>${htmlEsc(daten.artikel)} × ${daten.menge}</li>
+        <li>${euro(daten.summe)} inkl. Versand</li>
+        <li>${htmlEsc(daten.name)}, ${htmlEsc(daten.email)}</li>
+        <li>${htmlEsc(daten.strasse)}, ${htmlEsc(daten.plz)} ${htmlEsc(daten.ort)}</li>
+      </ul>
+      <form method="post" action="/bestaetigen">
+        <input type="hidden" name="t" value="${htmlEsc(String(token))}">
+        <button type="submit">Zahlung ist da — Vertrag annehmen</button>
+      </form>`;
+    return new Response(htmlSeite('Bestellbestätigung senden', innen), {
+      headers: { 'Content-Type': 'text/html; charset=UTF-8', 'X-Robots-Tag': 'noindex', 'Cache-Control': 'no-store' },
+    });
+  }
+
+  if (request.method !== 'POST') {
+    return new Response('Nur GET oder POST', { status: 405 });
+  }
+
+  const anhang = await pdfAnhang();
+  const brief = {
+    from: 'KANID Factory <info@kanid.de>',
+    to: [daten.email],
+    bcc: [EMPFAENGER],
+    subject: `Ihre Bestellung bei KANID — Bestellbestätigung ${daten.bestellnummer}`,
+    text: bestellBestaetigungText(daten),
+    html: bestellBestaetigungHtml(daten),
+  };
+  if (anhang) brief.attachments = [anhang];
+
+  const ok = await sendeResend(env.RESEND_API_KEY, brief);
+  if (!ok) {
+    return new Response(htmlSeite('Fehler', '<p>Die Bestätigung konnte nicht gesendet werden. Resend prüfen.</p>'), {
+      status: 500,
+      headers: { 'Content-Type': 'text/html; charset=UTF-8' },
+    });
+  }
+
+  return new Response(htmlSeite('Gesendet', `
+    <p class="mono">Erledigt</p>
+    <h1>Bestellbestätigung ist raus.</h1>
+    <p>An ${htmlEsc(daten.email)}, Kopie an ${htmlEsc(EMPFAENGER)}. PDF liegt bei, soweit der Abruf von kanid.de geklappt hat.</p>
+  `), {
+    headers: { 'Content-Type': 'text/html; charset=UTF-8', 'X-Robots-Tag': 'noindex' },
+  });
+}
+
 function vorkasseEingangHtml(daten) {
   const stand = new Date().toISOString().slice(0, 7);
   const nummer = daten.bestellnummer;
@@ -441,7 +774,15 @@ async function handleBestellung(request, env) {
   const zwischensumme = einzelpreis * menge;
   const summe = zwischensumme + VERSAND_EUR;
   const logo = /logo/i.test(artikel);
-  const daten = { name, email, strasse, plz, ort, artikel, menge, einzelpreis, summe, bestellnummer, anmerkung, logo };
+  const daten = {
+    name, email, strasse, plz, ort, artikel, menge, einzelpreis,
+    zwischensumme, summe, bestellnummer, anmerkung, logo,
+    datum: new Date().toISOString().slice(0, 10),
+  };
+
+  const geheim = env.BESTELL_SECRET || env.RESEND_API_KEY;
+  const token = await signiereAuftrag(daten, geheim);
+  const bestaetigenUrl = `${new URL(request.url).origin}/bestaetigen?t=${token}`;
 
   const intern = [
     'Neue Vorkasse-Bestellung KANID Factory',
@@ -459,7 +800,9 @@ async function handleBestellung(request, env) {
     `Ort:     ${plz} ${ort}`,
     anmerkung ? `Anmerkung: ${anmerkung}` : null,
     '',
-    'Nächster Schritt: Zahlungseingang prüfen, dann gesetzliche Bestellbestätigung senden.',
+    'Wenn das Geld da ist — diesen Link öffnen und dort bestätigen',
+    '(Mailscanner dürfen nichts auslösen, deshalb erst der Knopf auf der Seite):',
+    bestaetigenUrl,
   ].filter((zeile) => zeile !== null).join('\n');
 
   const internOk = await sendeResend(env.RESEND_API_KEY, {
@@ -519,8 +862,14 @@ export default {
       return new Response(null, { status: 204, headers: corsHeaders(origin) });
     }
 
-    if (request.method === 'GET' && (url.pathname === '/' || url.pathname === '/ping' || url.pathname === '/ping.php')) {
-      return json({ ok: true, runtime: 'cloudflare-worker', version: 5, time: new Date().toISOString() }, 200, origin);
+    const pfad = url.pathname.replace(/\/$/, '') || '/';
+
+    if (request.method === 'GET' && (pfad === '/' || pfad === '/ping' || pfad === '/ping.php')) {
+      return json({ ok: true, runtime: 'cloudflare-worker', version: 6, time: new Date().toISOString() }, 200, origin);
+    }
+
+    if (pfad === '/bestaetigen') {
+      return handleBestaetigen(request, env, url);
     }
 
     if (request.method !== 'POST') {
@@ -531,7 +880,6 @@ export default {
       return antwort(request, { ok: false, error: 'origin', meldung: 'Ungültige Herkunft.' }, 403);
     }
 
-    const pfad = url.pathname.replace(/\/$/, '') || '/';
     if (pfad === '/bestellung') {
       return handleBestellung(request, env);
     }
