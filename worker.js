@@ -107,10 +107,10 @@ function htmlZeilen(wert) {
   return htmlEsc(wert).replace(/\n/g, '<br>');
 }
 
-function zelle(label, wert, extra) {
-  return `<td style="padding:10px 12px;border-left:1px solid #0e2733;vertical-align:top;${extra || ''}">
-    <div style="margin:0 0 4px;font-family:Consolas,'Courier New',monospace;font-size:10px;letter-spacing:0.12em;text-transform:uppercase;color:#1b6ba4;">${label}</div>
-    <div style="margin:0;font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.35;color:#0e2733;font-weight:500;">${wert}</div>
+function feldZelle(label, wert, breite) {
+  return `<td width="${breite}" style="width:${breite};padding:10px 12px;border:1px solid #0e2733;vertical-align:top;">
+    <div style="margin:0 0 5px;font-family:Consolas,'Courier New',monospace;font-size:10px;letter-spacing:0.12em;text-transform:uppercase;color:#1b6ba4;">${label}</div>
+    <div style="margin:0;font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.4;color:#0e2733;font-weight:500;">${wert}</div>
   </td>`;
 }
 
@@ -129,130 +129,99 @@ function bestaetigungHtml({ name, firma, artLabel, kontext, message }) {
   <title>Eingangsbestätigung</title>
 </head>
 <body style="margin:0;padding:0;background:#e9ecee;">
-  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#e9ecee;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" bgcolor="#e9ecee" style="background:#e9ecee;">
     <tr>
-      <td align="center" style="padding:28px 12px;">
-        <table role="presentation" width="600" cellpadding="0" cellspacing="0" style="width:600px;max-width:600px;background:#ffffff;border:1px solid #0e2733;">
+      <td align="center" style="padding:32px 12px;">
+        <table role="presentation" width="600" cellpadding="0" cellspacing="0" bgcolor="#ffffff" style="width:600px;max-width:600px;background:#ffffff;border:1px solid #0e2733;border-collapse:collapse;">
+
           <tr>
-            <td style="padding:8px;">
-              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border:1px solid #c9d0d4;">
-
+            <td style="padding:22px 24px 18px;border-bottom:1px solid #0e2733;">
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
                 <tr>
-                  <td style="padding:20px 22px 16px;border-bottom:1px solid #0e2733;">
-                    <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
-                      <tr>
-                        <td style="vertical-align:middle;">
-                          <img src="https://kanid.de/assets/img/LOGO.png" width="168" alt="KANID" style="display:block;width:168px;height:auto;border:0;">
-                        </td>
-                        <td align="right" style="vertical-align:middle;font-family:Consolas,'Courier New',monospace;font-size:11px;letter-spacing:0.08em;text-transform:uppercase;color:#1b6ba4;line-height:1.5;">
-                          Eingangsbestätigung<br>
-                          Blatt 01 / 01
-                        </td>
-                      </tr>
-                    </table>
+                  <td width="220" style="vertical-align:middle;">
+                    <img src="https://kanid.de/assets/img/LOGO.png" width="176" height="48" alt="KANID" style="display:block;width:176px;height:auto;border:0;">
+                  </td>
+                  <td align="right" style="vertical-align:middle;font-family:Consolas,'Courier New',monospace;font-size:11px;letter-spacing:0.1em;text-transform:uppercase;color:#1b6ba4;line-height:1.55;">
+                    Eingangsbestätigung<br>
+                    ${htmlEsc(nummer)}
                   </td>
                 </tr>
-
-                <tr>
-                  <td style="padding:28px 22px 8px;font-family:Consolas,'Courier New',monospace;font-size:11px;letter-spacing:0.14em;text-transform:uppercase;color:#1b6ba4;">
-                    Nachricht eingegangen
-                  </td>
-                </tr>
-                <tr>
-                  <td style="padding:0 22px 18px;font-family:Arial,Helvetica,sans-serif;font-size:26px;line-height:1.2;font-weight:700;color:#0e2733;">
-                    Wir haben Ihre Anfrage erhalten.
-                  </td>
-                </tr>
-                <tr>
-                  <td style="padding:0 22px 22px;font-family:Arial,Helvetica,sans-serif;font-size:16px;line-height:1.55;color:#21262a;">
-                    Guten Tag ${htmlEsc(name)},<br><br>
-                    vielen Dank für Ihre Nachricht an KANID. Sie ist bei uns eingegangen.
-                    Diese E-Mail bestätigt nur den Empfang — sie ist keine Auftragsbestätigung
-                    und kein Angebot.
-                  </td>
-                </tr>
-
-                <tr>
-                  <td style="padding:0 22px 22px;">
-                    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border:1px solid #0e2733;border-collapse:collapse;">
-                      <tr>
-                        ${zelle('Firma', htmlEsc(firma), 'border-left:0;width:50%;')}
-                        ${zelle('Ansprechpartner', htmlEsc(name), 'width:50%;')}
-                      </tr>
-                      <tr>
-                        ${zelle('Art der Anfrage', htmlEsc(artLabel), 'border-left:0;border-top:1px solid #0e2733;')}
-                        ${zelle('Bezug', bezug, 'border-top:1px solid #0e2733;')}
-                      </tr>
-                      <tr>
-                        <td colspan="2" style="padding:10px 12px 14px;border-top:1px solid #0e2733;">
-                          <div style="margin:0 0 6px;font-family:Consolas,'Courier New',monospace;font-size:10px;letter-spacing:0.12em;text-transform:uppercase;color:#1b6ba4;">Mitteilung</div>
-                          <div style="margin:0;font-family:Arial,Helvetica,sans-serif;font-size:15px;line-height:1.5;color:#0e2733;">${htmlZeilen(message)}</div>
-                        </td>
-                      </tr>
-                    </table>
-                  </td>
-                </tr>
-
-                <tr>
-                  <td style="padding:0 22px 26px;font-family:Arial,Helvetica,sans-serif;font-size:16px;line-height:1.55;color:#21262a;">
-                    Wir antworten werktags innerhalb weniger Stunden.
-                  </td>
-                </tr>
-
-                <tr>
-                  <td style="padding:0 22px 28px;font-family:Arial,Helvetica,sans-serif;font-size:15px;line-height:1.55;color:#0e2733;">
-                    Mit freundlichen Grüßen<br>
-                    <strong>Konstantin Vinogradov</strong><br>
-                    <span style="font-size:13px;color:#21262a;">Geschäftsführer</span>
-                  </td>
-                </tr>
-
-                <tr>
-                  <td style="padding:0 22px 22px;border-top:1px solid #c9d0d4;">
-                    <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
-                      <tr>
-                        <td style="padding-top:20px;vertical-align:top;width:150px;">
-                          <img src="https://kanid.de/assets/img/LOGO.png" width="132" alt="KANID" style="display:block;width:132px;height:auto;border:0;">
-                        </td>
-                        <td style="padding-top:20px;font-family:Arial,Helvetica,sans-serif;font-size:13px;line-height:1.55;color:#0e2733;">
-                          <strong>KANID UG (haftungsbeschränkt)</strong><br>
-                          Geschäftsführer: Konstantin Vinogradov<br>
-                          Heinrich-Hertz-Str. 11<br>
-                          70794 Filderstadt<br>
-                          Handelsregister: HRB 798044<br>
-                          Telefon: <a href="tel:+4915207921611" style="color:#1b6ba4;text-decoration:none;">+49 1520 7921611</a><br>
-                          E-Mail: <a href="mailto:info@kanid.de" style="color:#1b6ba4;text-decoration:none;">info@kanid.de</a><br>
-                          Web: <a href="https://kanid.de" style="color:#1b6ba4;text-decoration:none;">kanid.de</a>
-                        </td>
-                      </tr>
-                    </table>
-                  </td>
-                </tr>
-
-                <tr>
-                  <td>
-                    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-top:1px solid #0e2733;border-collapse:collapse;font-family:Consolas,'Courier New',monospace;color:#0e2733;">
-                      <tr>
-                        ${zelle('KANID UG', 'Filderstadt', 'border-left:0;width:28%;')}
-                        ${zelle('Blatt', '01 / 01', 'width:18%;')}
-                        ${zelle('Stand', stand, 'width:18%;')}
-                        ${zelle('Maßstab', '1:1', 'width:18%;')}
-                      </tr>
-                      <tr>
-                        ${zelle('Benennung', 'Eingangsbestätigung Kontakt', 'border-left:0;border-top:1px solid #0e2733;width:50%;')}
-                        ${zelle('Zeichnungsnummer', nummer, 'border-top:1px solid #0e2733;width:50%;')}
-                      </tr>
-                      <tr>
-                        ${zelle('Bearbeiter', 'K. Vinogradov', 'border-left:0;border-top:1px solid #0e2733;')}
-                        ${zelle('Werkstoff / Norm', 'HTML · E-Mail', 'border-top:1px solid #0e2733;')}
-                      </tr>
-                    </table>
-                  </td>
-                </tr>
-
               </table>
             </td>
           </tr>
+
+          <tr>
+            <td style="padding:28px 24px 8px;font-family:Consolas,'Courier New',monospace;font-size:11px;letter-spacing:0.14em;text-transform:uppercase;color:#1b6ba4;">
+              Nachricht eingegangen
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:0 24px 16px;font-family:Arial,Helvetica,sans-serif;font-size:24px;line-height:1.2;font-weight:700;color:#0e2733;">
+              Wir haben Ihre Anfrage erhalten.
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:0 24px 22px;font-family:Arial,Helvetica,sans-serif;font-size:16px;line-height:1.55;color:#21262a;">
+              Guten Tag ${htmlEsc(name)},<br><br>
+              Ihre Nachricht ist bei uns eingegangen. Diese E-Mail bestätigt nur den Empfang.
+              Sie ist keine Auftragsbestätigung und kein Angebot.
+            </td>
+          </tr>
+
+          <tr>
+            <td style="padding:0 24px 24px;">
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
+                <tr>
+                  ${feldZelle('Firma', htmlEsc(firma), '50%')}
+                  ${feldZelle('Ansprechpartner', htmlEsc(name), '50%')}
+                </tr>
+                <tr>
+                  ${feldZelle('Art der Anfrage', htmlEsc(artLabel), '50%')}
+                  ${feldZelle('Bezug', bezug, '50%')}
+                </tr>
+                <tr>
+                  <td colspan="2" width="100%" style="padding:12px;border:1px solid #0e2733;vertical-align:top;">
+                    <div style="margin:0 0 6px;font-family:Consolas,'Courier New',monospace;font-size:10px;letter-spacing:0.12em;text-transform:uppercase;color:#1b6ba4;">Mitteilung</div>
+                    <div style="margin:0;font-family:Arial,Helvetica,sans-serif;font-size:15px;line-height:1.5;color:#0e2733;">${htmlZeilen(message)}</div>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+
+          <tr>
+            <td style="padding:0 24px 28px;font-family:Arial,Helvetica,sans-serif;font-size:16px;line-height:1.55;color:#21262a;">
+              Wir antworten werktags innerhalb weniger Stunden.<br><br>
+              Mit freundlichen Grüßen<br>
+              <strong style="color:#0e2733;">Konstantin Vinogradov</strong>
+            </td>
+          </tr>
+
+          <tr>
+            <td style="padding:0;">
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
+                <tr>
+                  ${feldZelle('KANID UG', 'Filderstadt', '25%')}
+                  ${feldZelle('Blatt', '01 / 01', '25%')}
+                  ${feldZelle('Stand', stand, '25%')}
+                  ${feldZelle('Maßstab', '1:1', '25%')}
+                </tr>
+                <tr>
+                  ${feldZelle('Benennung', 'Eingangsbestätigung Kontakt', '50%')}
+                  ${feldZelle('Zeichnungsnummer', nummer, '50%')}
+                </tr>
+                <tr>
+                  ${feldZelle('Bearbeiter', 'K. Vinogradov', '50%')}
+                  ${feldZelle('Anschrift', 'Heinrich-Hertz-Str. 11<br>70794 Filderstadt', '50%')}
+                </tr>
+                <tr>
+                  ${feldZelle('Register', 'HRB 798044 · Amtsgericht Stuttgart', '50%')}
+                  ${feldZelle('Kontakt', '+49 1520 7921611<br>info@kanid.de · kanid.de', '50%')}
+                </tr>
+              </table>
+            </td>
+          </tr>
+
         </table>
       </td>
     </tr>
@@ -271,7 +240,7 @@ export default {
     }
 
     if (request.method === 'GET' && (url.pathname === '/' || url.pathname === '/ping' || url.pathname === '/ping.php')) {
-      return json({ ok: true, runtime: 'cloudflare-worker', version: 3, time: new Date().toISOString() }, 200, origin);
+      return json({ ok: true, runtime: 'cloudflare-worker', version: 4, time: new Date().toISOString() }, 200, origin);
     }
 
     if (request.method !== 'POST') {
