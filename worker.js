@@ -1,8 +1,7 @@
 // Cloudflare Worker — in die Oberflaeche einfuegen:
-// dash.cloudflare.com → Workers & Pages → Create → Hello World → Edit code
+// dash.cloudflare.com → Workers & Pages → kanid-kontakt → Edit code
 //
-// Secret anlegen (Settings → Variables and Secrets):
-//   RESEND_API_KEY   = re_...
+// Secret: RESEND_API_KEY
 
 const ERLAUBT = [
   'https://kanid.de',
@@ -12,6 +11,18 @@ const ERLAUBT = [
 const ERLAUBT_SUFFIX = '.app-ionos.space';
 const EMPFAENGER = 'info@kanid.de';
 const DANKE = 'https://kanid.de/danke';
+
+const ARTEN = {
+  konstruktion: { tag: 'Retainer', label: 'Konstruktionskapazität' },
+  einzelprojekt: { tag: 'Projekt', label: 'Einzelprojekt' },
+  factory: { tag: 'Factory', label: 'Factory-Produkt' },
+  sonstiges: { tag: 'Sonstiges', label: 'Sonstiges' },
+};
+
+const QUELLEN = new Set([
+  'hero', 'starter', 'pro', 'enterprise', 'factory',
+  'footer', 'blog', 'referenz',
+]);
 
 function originErlaubt(origin) {
   if (!origin) return true;
@@ -72,6 +83,18 @@ function feld(value, max) {
   return value.replace(/[\r\n\0]/g, ' ').trim().slice(0, max);
 }
 
+async function sendeResend(apiKey, brief) {
+  const antwort = await fetch('https://api.resend.com/emails', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(brief),
+  });
+  return antwort.ok;
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -82,7 +105,7 @@ export default {
     }
 
     if (request.method === 'GET' && (url.pathname === '/' || url.pathname === '/ping' || url.pathname === '/ping.php')) {
-      return json({ ok: true, runtime: 'cloudflare-worker', time: new Date().toISOString() }, 200, origin);
+      return json({ ok: true, runtime: 'cloudflare-worker', version: 2, time: new Date().toISOString() }, 200, origin);
     }
 
     if (request.method !== 'POST') {
@@ -108,13 +131,19 @@ export default {
     }
 
     const name = feld(form.get('name'), 120);
+    const firma = feld(form.get('firma'), 160);
     const email = feld(form.get('email'), 180);
-    const subject = feld(form.get('subject'), 180);
+    const art = feld(form.get('art'), 40);
+    const quelleRoh = feld(form.get('quelle'), 40);
+    const kontext = feld(form.get('kontext'), 180);
     const message = typeof form.get('message') === 'string'
       ? form.get('message').replace(/\0/g, '').trim().slice(0, 5000)
       : '';
 
-    if (!name || !email || !subject || !message) {
+    const artEintrag = ARTEN[art];
+    const quelle = QUELLEN.has(quelleRoh) ? quelleRoh : '';
+
+    if (!name || !firma || !email || !artEintrag || !message) {
       return antwort(request, { ok: false, error: 'validation', meldung: 'Bitte füllen Sie alle Pflichtfelder aus.' }, 422);
     }
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
@@ -129,39 +158,66 @@ export default {
       }, 500);
     }
 
-    const text = [
+    const mailBetreff = kontext
+      ? `[${artEintrag.tag}] ${firma} — ${kontext}`
+      : `[${artEintrag.tag}] ${firma}`;
+
+    const intern = [
       'Neue Nachricht über das Kontaktformular auf kanid.de',
       '',
+      `Firma:   ${firma}`,
       `Name:    ${name}`,
       `E-Mail:  ${email}`,
-      `Betreff: ${subject}`,
+      `Art:     ${artEintrag.label}`,
+      quelle ? `Quelle:  ${quelle}` : null,
+      kontext ? `Kontext: ${kontext}` : null,
       '',
       'Nachricht:',
       message,
-    ].join('\n');
+    ].filter((zeile) => zeile !== null).join('\n');
 
-    const resend = await fetch('https://api.resend.com/emails', {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${env.RESEND_API_KEY}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        from: 'KANID Kontaktformular <info@kanid.de>',
-        to: [EMPFAENGER],
-        reply_to: email,
-        subject: `Kontaktanfrage: ${subject}`,
-        text,
-      }),
+    const internOk = await sendeResend(env.RESEND_API_KEY, {
+      from: 'KANID Kontaktformular <info@kanid.de>',
+      to: [EMPFAENGER],
+      reply_to: email,
+      subject: mailBetreff,
+      text: intern,
     });
 
-    if (!resend.ok) {
+    if (!internOk) {
       return antwort(request, {
         ok: false,
         error: 'mail',
         meldung: 'Die Nachricht konnte nicht versendet werden. Bitte schreiben Sie direkt an info@kanid.de.',
       }, 500);
     }
+
+    const bestaetigung = [
+      `Guten Tag ${name},`,
+      '',
+      'wir haben Ihre Nachricht erhalten. Diese E-Mail bestätigt nur den Eingang — sie ist keine Auftragsbestätigung.',
+      '',
+      `Firma:     ${firma}`,
+      `Art:       ${artEintrag.label}`,
+      kontext ? `Bezug:     ${kontext}` : null,
+      '',
+      'Ihre Nachricht:',
+      message,
+      '',
+      'Wir antworten werktags innerhalb weniger Stunden.',
+      '',
+      'KANID UG (haftungsbeschränkt)',
+      'Heinrich-Hertz-Str. 11',
+      '70794 Filderstadt',
+      'info@kanid.de · +49 1520 7921611',
+    ].filter((zeile) => zeile !== null).join('\n');
+
+    await sendeResend(env.RESEND_API_KEY, {
+      from: 'KANID <info@kanid.de>',
+      to: [email],
+      subject: 'Ihre Nachricht an KANID',
+      text: bestaetigung,
+    });
 
     return antwort(request, { ok: true, mail: true }, 200);
   },
