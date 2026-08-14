@@ -370,7 +370,7 @@ function bestellBestaetigungText(daten) {
     '',
     'Alle Preise enthalten die gesetzliche Umsatzsteuer von 19 %.',
     '',
-    'Zahlungsart: Vorkasse per Überweisung',
+    `Zahlungsart: ${daten.zahlungsart || 'Vorkasse per Überweisung'}`,
     'Lieferung: Wir fertigen erst nach Ihrer Bestellung. In der Regel ist Ihre Sendung nach 4–6 Werktagen bei Ihnen, spätestens nach 15 Werktagen ab Zahlungseingang. Versand mit DHL.',
     daten.logo
       ? 'Bitte senden Sie uns Ihr Logo als SVG, DXF oder PDF an info@kanid.de. Die Fertigung startet, sobald die Datei geprüft und freigegeben ist.'
@@ -444,7 +444,7 @@ function bestellBestaetigungHtml(daten) {
                 </tr>
                 <tr>
                   ${feldZelle('Gesamtsumme', euro(daten.summe), '50%')}
-                  ${feldZelle('Zahlungsart', 'Vorkasse per Überweisung', '50%')}
+                  ${feldZelle('Zahlungsart', htmlEsc(daten.zahlungsart || 'Vorkasse per Überweisung'), '50%')}
                 </tr>
                 <tr>
                   <td colspan="2" style="padding:12px;border:1px solid #0e2733;font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.5;color:#0e2733;">
@@ -853,6 +853,107 @@ async function handleBestellung(request, env) {
   return antwort(request, { ok: true, mail: true, bestellnummer }, 200);
 }
 
+const PAYPAL_HAENDLER = 'CXR79E3QL279J';
+
+async function handlePaypal(request, env) {
+  const roh = await request.text();
+  const pruefung = await fetch('https://ipnpb.paypal.com/cgi-bin/webscr', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded',
+      'User-Agent': 'KANID-IPN',
+    },
+    body: `cmd=_notify-validate&${roh}`,
+  });
+  const status = (await pruefung.text()).trim();
+  if (status !== 'VERIFIED') {
+    return new Response('INVALID', { status: 200 });
+  }
+
+  const felder = new URLSearchParams(roh);
+  const zahlung = felder.get('payment_status') || '';
+  const empfaenger = felder.get('receiver_id') || felder.get('business') || '';
+  if (zahlung !== 'Completed') {
+    return new Response('IGNORED', { status: 200 });
+  }
+  if (PAYPAL_HAENDLER && empfaenger && empfaenger !== PAYPAL_HAENDLER && !/kanid/i.test(empfaenger)) {
+    return new Response('WRONG_RECEIVER', { status: 200 });
+  }
+
+  const email = (felder.get('payer_email') || '').trim();
+  const name = [felder.get('first_name'), felder.get('last_name')].filter(Boolean).join(' ').trim()
+    || (felder.get('address_name') || '').trim()
+    || 'Kunde';
+  const artikel = (felder.get('item_name') || felder.get('item_name1') || 'KANID Factory').trim();
+  const menge = Math.max(1, parseInt(felder.get('quantity') || felder.get('quantity1') || '1', 10) || 1);
+  const brutto = Number(felder.get('mc_gross') || '0');
+  const versandPaypal = Number(felder.get('mc_shipping') || felder.get('shipping') || '0');
+  const waehrung = felder.get('mc_currency') || '';
+  const txn = (felder.get('txn_id') || '').trim();
+  if (!email || !txn || waehrung !== 'EUR' || !Number.isFinite(brutto) || brutto <= 0) {
+    return new Response('INCOMPLETE', { status: 200 });
+  }
+
+  const warenwert = Math.max(0, brutto - (Number.isFinite(versandPaypal) ? versandPaypal : 0));
+  const einzelpreis = Math.round((warenwert / menge) * 100) / 100;
+  const daten = {
+    name,
+    email,
+    strasse: (felder.get('address_street') || '').trim(),
+    plz: (felder.get('address_zip') || '').trim(),
+    ort: (felder.get('address_city') || '').trim(),
+    artikel,
+    menge,
+    einzelpreis,
+    zwischensumme: warenwert,
+    summe: brutto,
+    bestellnummer: `PP-${txn.slice(-10)}`,
+    anmerkung: '',
+    logo: /logo/i.test(artikel),
+    datum: new Date().toISOString().slice(0, 10),
+    zahlungsart: 'PayPal',
+  };
+
+  const internOk = await sendeResend(env.RESEND_API_KEY, {
+    from: 'KANID Factory <info@kanid.de>',
+    to: [EMPFAENGER],
+    reply_to: email,
+    subject: `[PayPal] ${daten.bestellnummer} — ${artikel}`,
+    text: [
+      'PayPal-Zahlung eingegangen (IPN geprüft).',
+      '',
+      `Transaktion: ${txn}`,
+      `Bestellnummer: ${daten.bestellnummer}`,
+      `Artikel: ${artikel} × ${menge}`,
+      `Summe: ${euro(brutto)}`,
+      `Kunde: ${name} <${email}>`,
+      daten.strasse ? `Adresse: ${daten.strasse}, ${daten.plz} ${daten.ort}` : null,
+      '',
+      'Gesetzliche Bestellbestätigung geht an den Kunden.',
+    ].filter(Boolean).join('\n'),
+  });
+  if (!internOk) {
+    return new Response('MAIL_FAIL', { status: 500 });
+  }
+
+  const anhang = await pdfAnhang();
+  const brief = {
+    from: 'KANID Factory <info@kanid.de>',
+    to: [email],
+    subject: `Ihre Bestellung bei KANID — Bestellbestätigung ${daten.bestellnummer}`,
+    text: bestellBestaetigungText(daten),
+    html: bestellBestaetigungHtml(daten),
+  };
+  if (anhang) brief.attachments = [anhang];
+
+  const kundeOk = await sendeResend(env.RESEND_API_KEY, brief);
+  if (!kundeOk) {
+    return new Response('MAIL_FAIL', { status: 500 });
+  }
+
+  return new Response('OK', { status: 200 });
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -865,11 +966,18 @@ export default {
     const pfad = url.pathname.replace(/\/$/, '') || '/';
 
     if (request.method === 'GET' && (pfad === '/' || pfad === '/ping' || pfad === '/ping.php')) {
-      return json({ ok: true, runtime: 'cloudflare-worker', version: 6, time: new Date().toISOString() }, 200, origin);
+      return json({ ok: true, runtime: 'cloudflare-worker', version: 7, time: new Date().toISOString() }, 200, origin);
     }
 
     if (pfad === '/bestaetigen') {
       return handleBestaetigen(request, env, url);
+    }
+
+    if (pfad === '/paypal') {
+      if (request.method !== 'POST') {
+        return new Response('IPN erwartet POST', { status: 405 });
+      }
+      return handlePaypal(request, env);
     }
 
     if (request.method !== 'POST') {
