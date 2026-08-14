@@ -292,6 +292,130 @@ async function leseAuftrag(token, geheim) {
   }
 }
 
+function versandGewicht(artikel) {
+  const t = String(artikel || '').toLowerCase();
+  if (t.includes('2.0') || t.includes('2-0') || t.includes('zollstock')) {
+    return { gramm: 400, hinweis: 'SoloMeter 2.0 laut Stammdaten, plus Karton' };
+  }
+  if (t.includes('solometer')) {
+    return { gramm: 250, hinweis: 'SoloMeter laut Stammdaten, plus Karton' };
+  }
+  if (t.includes('querle')) {
+    return { gramm: 100, hinweis: 'QuerLe laut Stammdaten, plus Karton' };
+  }
+  return { gramm: 300, hinweis: 'Schätzung, bitte nachwiegen' };
+}
+
+function versandSeite(daten, token) {
+  const gewicht = versandGewicht(daten.artikel);
+  const paket = gewicht.gramm + 80 <= 1000 ? 'DHL Warenpost National' : 'DHL Paket';
+  const adresse = [daten.name, daten.strasse, `${daten.plz} ${daten.ort}`, 'Deutschland']
+    .filter((zeile) => String(zeile || '').trim() && String(zeile).trim() !== 'undefined')
+    .join('\n');
+  const zeile = (label, wert) => `
+    <div class="zeile">
+      <div>
+        <div class="lab">${label}</div>
+        <div class="wert" data-copy>${htmlEsc(wert || '—')}</div>
+      </div>
+      <button type="button" class="copy">Kopieren</button>
+    </div>`;
+
+  return `<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex">
+  <title>Versand ${htmlEsc(daten.bestellnummer)}</title>
+  <style>
+    body { margin: 0; background: #e9ecee; font-family: Arial, Helvetica, sans-serif; color: #0e2733; }
+    main { max-width: 620px; margin: 32px auto; padding: 28px; background: #fff; border: 1px solid #0e2733; }
+    .mono { font-family: Consolas, "Courier New", monospace; font-size: 11px; letter-spacing: .12em; text-transform: uppercase; color: #1b6ba4; }
+    h1 { font-size: 22px; margin: 8px 0 18px; }
+    .zeile { display: flex; gap: 12px; align-items: center; justify-content: space-between; padding: 10px 0; border-bottom: 1px solid #c9d0d4; }
+    .lab { font-family: Consolas, "Courier New", monospace; font-size: 10px; letter-spacing: .12em; text-transform: uppercase; color: #1b6ba4; margin-bottom: 4px; }
+    .wert { font-size: 16px; line-height: 1.35; white-space: pre-wrap; }
+    .copy { flex: 0 0 auto; padding: 10px 14px; border: 1px solid #0e2733; background: #fff; color: #0e2733; font-weight: 700; cursor: pointer; }
+    .copy:hover, .copy.ok { background: #f2c200; border-color: #f2c200; }
+    .block { margin-top: 22px; }
+    a.dhl { display: inline-block; margin-top: 18px; padding: 12px 16px; background: #f2c200; color: #0e2733; font-weight: 700; text-decoration: none; }
+    .note { margin-top: 16px; color: #21262a; font-size: 14px; line-height: 1.5; }
+  </style>
+</head>
+<body>
+<main>
+  <p class="mono">DHL Versand</p>
+  <h1>Label-Daten ${htmlEsc(daten.bestellnummer)}</h1>
+  <p>Einzelne Zeile kopieren und ins DHL-Formular einfügen. Nichts markieren, kein Strg+C.</p>
+
+  ${zeile('Name', daten.name)}
+  ${zeile('Straße', daten.strasse)}
+  ${zeile('PLZ', daten.plz)}
+  ${zeile('Ort', daten.ort)}
+  ${zeile('Land', 'Deutschland')}
+  ${zeile('E-Mail', daten.email)}
+  ${zeile('Bestellnummer / Referenz', daten.bestellnummer)}
+  ${zeile('Artikel', `${daten.artikel} × ${daten.menge}`)}
+  ${zeile('Gewicht Ware', `${gewicht.gramm} g`)}
+  ${zeile('DHL-Produkt', paket)}
+
+  <div class="block">
+    <div class="zeile">
+      <div>
+        <div class="lab">Ganze Adresse</div>
+        <div class="wert" data-copy>${htmlEsc(adresse)}</div>
+      </div>
+      <button type="button" class="copy">Kopieren</button>
+    </div>
+  </div>
+
+  <p class="note">${htmlEsc(gewicht.hinweis)}. Vorgeschlagenes Produkt: ${htmlEsc(paket)}.</p>
+  <a class="dhl" href="https://www.dhl.de/de/privatkunden/pakete-versenden/pakete-national-versenden.html" target="_blank" rel="noopener">DHL Versand öffnen</a>
+  ${token ? `<p class="note"><a href="/bestaetigen?t=${htmlEsc(token)}">Zur Bestellbestätigung</a></p>` : ''}
+</main>
+<script>
+document.querySelectorAll('.copy').forEach((knopf) => {
+  knopf.addEventListener('click', async () => {
+    const text = knopf.parentElement.querySelector('[data-copy]').innerText;
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      const feld = document.createElement('textarea');
+      feld.value = text;
+      document.body.appendChild(feld);
+      feld.select();
+      document.execCommand('copy');
+      feld.remove();
+    }
+    knopf.textContent = 'Kopiert';
+    knopf.classList.add('ok');
+    setTimeout(() => {
+      knopf.textContent = 'Kopieren';
+      knopf.classList.remove('ok');
+    }, 1400);
+  });
+});
+</script>
+</body>
+</html>`;
+}
+
+async function handleVersand(request, env, url) {
+  const geheim = env.BESTELL_SECRET || env.RESEND_API_KEY;
+  const token = url.searchParams.get('t');
+  const daten = await leseAuftrag(token, geheim);
+  if (!daten) {
+    return new Response(htmlSeite('Ungültig', '<p class="mono">Link ungültig</p><h1>Dieser Versandlink gilt nicht.</h1>'), {
+      status: 403,
+      headers: { 'Content-Type': 'text/html; charset=UTF-8', 'X-Robots-Tag': 'noindex' },
+    });
+  }
+  return new Response(versandSeite(daten, token), {
+    headers: { 'Content-Type': 'text/html; charset=UTF-8', 'X-Robots-Tag': 'noindex', 'Cache-Control': 'no-store' },
+  });
+}
+
 function htmlSeite(titel, innen) {
   return `<!DOCTYPE html>
 <html lang="de">
@@ -570,6 +694,7 @@ async function handleBestaetigen(request, env, url) {
     <p class="mono">Erledigt</p>
     <h1>Bestellbestätigung ist raus.</h1>
     <p>An ${htmlEsc(daten.email)}, Kopie an ${htmlEsc(EMPFAENGER)}. PDF liegt bei, soweit der Abruf von kanid.de geklappt hat.</p>
+    <p><a href="/versand?t=${htmlEsc(String(token))}">Weiter zum DHL-Versand</a></p>
   `), {
     headers: { 'Content-Type': 'text/html; charset=UTF-8', 'X-Robots-Tag': 'noindex' },
   });
@@ -782,7 +907,9 @@ async function handleBestellung(request, env) {
 
   const geheim = env.BESTELL_SECRET || env.RESEND_API_KEY;
   const token = await signiereAuftrag(daten, geheim);
-  const bestaetigenUrl = `${new URL(request.url).origin}/bestaetigen?t=${token}`;
+  const basis = new URL(request.url).origin;
+  const bestaetigenUrl = `${basis}/bestaetigen?t=${token}`;
+  const versandUrl = `${basis}/versand?t=${token}`;
 
   const intern = [
     'Neue Vorkasse-Bestellung KANID Factory',
@@ -800,9 +927,11 @@ async function handleBestellung(request, env) {
     `Ort:     ${plz} ${ort}`,
     anmerkung ? `Anmerkung: ${anmerkung}` : null,
     '',
-    'Wenn das Geld da ist — diesen Link öffnen und dort bestätigen',
-    '(Mailscanner dürfen nichts auslösen, deshalb erst der Knopf auf der Seite):',
+    'Wenn das Geld da ist — Bestätigung senden:',
     bestaetigenUrl,
+    '',
+    'Danach Label-Daten für DHL (Kopierknöpfe):',
+    versandUrl,
   ].filter((zeile) => zeile !== null).join('\n');
 
   const internOk = await sendeResend(env.RESEND_API_KEY, {
@@ -914,6 +1043,10 @@ async function handlePaypal(request, env) {
     zahlungsart: 'PayPal',
   };
 
+  const geheim = env.BESTELL_SECRET || env.RESEND_API_KEY;
+  const token = await signiereAuftrag(daten, geheim);
+  const versandUrl = `${new URL(request.url).origin}/versand?t=${token}`;
+
   const internOk = await sendeResend(env.RESEND_API_KEY, {
     from: 'KANID Factory <info@kanid.de>',
     to: [EMPFAENGER],
@@ -930,6 +1063,9 @@ async function handlePaypal(request, env) {
       daten.strasse ? `Adresse: ${daten.strasse}, ${daten.plz} ${daten.ort}` : null,
       '',
       'Gesetzliche Bestellbestätigung geht an den Kunden.',
+      '',
+      'Label-Daten für DHL (Kopierknöpfe):',
+      versandUrl,
     ].filter(Boolean).join('\n'),
   });
   if (!internOk) {
@@ -966,11 +1102,15 @@ export default {
     const pfad = url.pathname.replace(/\/$/, '') || '/';
 
     if (request.method === 'GET' && (pfad === '/' || pfad === '/ping' || pfad === '/ping.php')) {
-      return json({ ok: true, runtime: 'cloudflare-worker', version: 7, time: new Date().toISOString() }, 200, origin);
+      return json({ ok: true, runtime: 'cloudflare-worker', version: 8, time: new Date().toISOString() }, 200, origin);
     }
 
     if (pfad === '/bestaetigen') {
       return handleBestaetigen(request, env, url);
+    }
+
+    if (pfad === '/versand') {
+      return handleVersand(request, env, url);
     }
 
     if (pfad === '/paypal') {
