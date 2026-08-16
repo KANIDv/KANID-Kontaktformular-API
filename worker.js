@@ -306,12 +306,117 @@ function versandGewicht(artikel) {
   return { gramm: 300, hinweis: 'Schätzung, bitte nachwiegen' };
 }
 
+const KARTON_GRAMM = 80;
+
+const ABSENDER = {
+  name1: 'KANID UG (haftungsbeschränkt)',
+  strasse: 'Heinrich-Hertz-Str.',
+  hausnr: '11',
+  plz: '70794',
+  ort: 'Filderstadt',
+};
+
+// Header exakt aus der Easylog-Vorlage
+// "DHL Easylogkonvertiert-Vorlage Sendungsdatenimport" (PIPE, UTF-8, Komma).
+const EASYLOG_KOPF = 'Status|Status-Text|POOL_REFNR|Abrechnungsnummer Versenden|Abrechnungsnummer Retoure Versenden|Absender Name 1 Versenden|Absender Straße Versenden|Absender Hausnummer Versenden|Absender PLZ Versenden|Absender Ort Versenden|Retourenempfänger Name 1 Versenden|Retourenempfänger Straße Versenden|Retourenempfänger Hausnummer Versenden|Retourenempfänger PLZ Versenden|Retourenempfänger Ort Versenden|Kontoreferenz Versenden|POOL_EMPF_NAME1|POOL_EMPF_NAME2|POOL_EMPF_NAME3|POOL_EMPF_PLZ|POOL_EMPF_ORT|POOL_EMPF_STRASSE|POOL_EMPF_HAUSNR|POOL_EMPF_TEL|POOL_EMPF_EMAIL|POOL_EMPF_MINDESTALTER|POOL_EMPF_LANDCODE|POOL_GEWICHT|POOL_V_ZOLL_WARENART|POOL_V_VORAUSVERF_INT|POOL_VORDATE|POOL_EINZELWUNSCH |POOL_VERWENDUNGSZWECK|NN-Verw-Zweck1|NN-Verw-Zweck2|NN-Betrag|TV-Betrag|Alter Alterssichtprüfung 01|Frankatur 54|Zoll Beschreibung|Zoll Ursprungsland|Zoll Zolltarifnummer|Zoll Gewicht|Zoll Warenwert|Zoll Warenart|Zoll Warenart Beschreibung für Sonstiges|(Zoll Warenart Erklärung)|Vorausverfügungsart 53|(VorV Int Erklärung)|DHL Paket 01|GoGREEN 01|Transportversicherung 01|Eigenhändig 01|Nachnahme 01|Alterssichtprüfung 01|DHL Retoure 07|Weltpaket 53|Nachnahme 53|GoGREEN 53|Vorausverfügung 53|Premium 53|Rückschein 53|Transportversicherung 53|DHL Europaket 54|GoGREEN 54|Transportversicherung 54|Versandbestätigung alle|Sperrgut 01/53|Produkt-Service-Zuordnung Gesamt|###|POOL_V_VERFAHREN|POOL_V_TEILNAHME|POOL_V_EXTRASLST|POOL_V_ABS_REFNR|POOL_V_MAND_REFNR|POOL_V_PRODUKT_CN|POOL_ANZAHL_SENDUNGEN|POOL_ZOLL_WARENLISTE|POOL_V_VORAUSVERF_INT_TERMIN|Bankname Versenden|IBAN Versenden|Zahlungsempfänger Versenden|BIC Versenden|POOL_EMPF_REFNR|Absender Name 2 Versenden|Zoll MRN|Paketankündigung Versenden|Retourenempfänger Name 2 Versenden|GoGreenPlus (Beilegerretoure)';
+
+function versandMenge(daten) {
+  const menge = Number(daten && daten.menge);
+  return Number.isFinite(menge) && menge > 0 ? menge : 1;
+}
+
+function versandBruttoGramm(daten) {
+  return versandGewicht(daten.artikel).gramm * versandMenge(daten) + KARTON_GRAMM;
+}
+
+function versandProdukt(daten) {
+  return versandBruttoGramm(daten) <= 1000 ? 'DHL Kleinpaket' : 'DHL Paket';
+}
+
+function teileStrasse(roh) {
+  const text = String(roh || '').replace(/\s+/g, ' ').trim();
+  const treffer = text.match(/^(.*\S)\s+(\d+[a-zA-Z]?(?:\s*[-/]\s*\d+[a-zA-Z]?)?)$/);
+  if (!treffer) return { strasse: text, hausnr: '', getrennt: false };
+  return {
+    strasse: treffer[1].trim(),
+    hausnr: treffer[2].replace(/\s+/g, ''),
+    getrennt: true,
+  };
+}
+
+function easylogFeld(wert) {
+  const text = String(wert ?? '').replace(/[\r\n]+/g, ' ').trim();
+  if (!text) return '';
+  if (/[|"\n]/.test(text)) return `"${text.replace(/"/g, '""')}"`;
+  return text;
+}
+
+function easylogGewichtKg(gramm) {
+  const kg = Math.max(Number(gramm) || 0, 1) / 1000;
+  return kg.toFixed(3).replace('.', ',').replace(/0+$/, '').replace(/,$/, ',0');
+}
+
+function utf8ZuB64(text) {
+  const bytes = new TextEncoder().encode(text);
+  let bin = '';
+  for (let i = 0; i < bytes.length; i += 1) bin += String.fromCharCode(bytes[i]);
+  return btoa(bin);
+}
+
+function easylogDatei(daten) {
+  const kopf = EASYLOG_KOPF.split('|');
+  const empf = teileStrasse(daten.strasse);
+  const produkt = versandProdukt(daten);
+  const brutto = versandBruttoGramm(daten);
+  const werte = Object.fromEntries(kopf.map((spalte) => [spalte, '']));
+
+  werte.POOL_REFNR = daten.bestellnummer || '';
+  werte['Kontoreferenz Versenden'] = daten.bestellnummer || '';
+  werte.POOL_EMPF_REFNR = daten.bestellnummer || '';
+  werte['Absender Name 1 Versenden'] = ABSENDER.name1;
+  werte['Absender Straße Versenden'] = ABSENDER.strasse;
+  werte['Absender Hausnummer Versenden'] = ABSENDER.hausnr;
+  werte['Absender PLZ Versenden'] = ABSENDER.plz;
+  werte['Absender Ort Versenden'] = ABSENDER.ort;
+  werte.POOL_EMPF_NAME1 = daten.name || '';
+  werte.POOL_EMPF_PLZ = daten.plz || '';
+  werte.POOL_EMPF_ORT = daten.ort || '';
+  werte.POOL_EMPF_STRASSE = empf.strasse;
+  werte.POOL_EMPF_HAUSNR = empf.hausnr;
+  werte.POOL_EMPF_EMAIL = daten.email || '';
+  werte.POOL_EMPF_LANDCODE = 'DE';
+  werte.POOL_GEWICHT = easylogGewichtKg(brutto);
+  werte['Produkt-Service-Zuordnung Gesamt'] = produkt;
+  werte['Paketankündigung Versenden'] = daten.email || '';
+  werte.POOL_ANZAHL_SENDUNGEN = '1';
+  if (produkt === 'DHL Paket') werte['DHL Paket 01'] = 'X';
+
+  const name = String(daten.bestellnummer || 'sendung').replace(/[^\w.-]+/g, '_');
+  return {
+    filename: `${name}-dhl-easylog.csv`,
+    inhalt: `${EASYLOG_KOPF}\n${kopf.map((spalte) => easylogFeld(werte[spalte])).join('|')}\n`,
+    produkt,
+    brutto,
+    empf,
+  };
+}
+
+function easylogAnhang(daten) {
+  const datei = easylogDatei(daten);
+  return {
+    filename: datei.filename,
+    content: utf8ZuB64(datei.inhalt),
+  };
+}
+
 function versandSeite(daten, token) {
   const gewicht = versandGewicht(daten.artikel);
-  const paket = gewicht.gramm + 80 <= 1000 ? 'DHL Warenpost National' : 'DHL Paket';
+  const datei = easylogDatei(daten);
+  const paket = datei.produkt;
   const adresse = [daten.name, daten.strasse, `${daten.plz} ${daten.ort}`, 'Deutschland']
     .filter((zeile) => String(zeile || '').trim() && String(zeile).trim() !== 'undefined')
     .join('\n');
+  const download = token ? `/versand?t=${htmlEsc(token)}&download=1` : '';
   const zeile = (label, wert) => `
     <div class="zeile">
       <div>
@@ -339,25 +444,30 @@ function versandSeite(daten, token) {
     .copy { flex: 0 0 auto; padding: 10px 14px; border: 1px solid #0e2733; background: #fff; color: #0e2733; font-weight: 700; cursor: pointer; }
     .copy:hover, .copy.ok { background: #f2c200; border-color: #f2c200; }
     .block { margin-top: 22px; }
-    a.dhl { display: inline-block; margin-top: 18px; padding: 12px 16px; background: #f2c200; color: #0e2733; font-weight: 700; text-decoration: none; }
+    a.dhl { display: inline-block; margin-top: 18px; margin-right: 10px; padding: 12px 16px; background: #f2c200; color: #0e2733; font-weight: 700; text-decoration: none; }
+    a.sek { background: #fff; border: 1px solid #0e2733; }
     .note { margin-top: 16px; color: #21262a; font-size: 14px; line-height: 1.5; }
+    .warn { margin-top: 16px; padding: 12px; border: 1px solid #0e2733; background: #fff8d6; font-size: 14px; line-height: 1.5; }
   </style>
 </head>
 <body>
 <main>
-  <p class="mono">DHL Versand</p>
+  <p class="mono">DHL Easylog</p>
   <h1>Label-Daten ${htmlEsc(daten.bestellnummer)}</h1>
-  <p>Einzelne Zeile kopieren und ins DHL-Formular einfügen. Nichts markieren, kein Strg+C.</p>
+  <p>Die Importdatei ist mit deiner Vorlage <strong>DHL Easylogkonvertiert-Vorlage Sendungsdatenimport</strong> ausgefüllt. In Easylog: Sendungsdatenimport → diese Datei wählen.</p>
+  ${download ? `<a class="dhl" href="${download}">Easylog-Datei herunterladen</a>` : ''}
+  ${datei.empf.getrennt ? '' : '<p class="warn">Straße und Hausnummer konnten nicht getrennt werden. Bitte in Easylog prüfen.</p>'}
 
   ${zeile('Name', daten.name)}
-  ${zeile('Straße', daten.strasse)}
+  ${zeile('Straße', datei.empf.strasse)}
+  ${zeile('Hausnummer', datei.empf.hausnr || '—')}
   ${zeile('PLZ', daten.plz)}
   ${zeile('Ort', daten.ort)}
-  ${zeile('Land', 'Deutschland')}
+  ${zeile('Land', 'DE')}
   ${zeile('E-Mail', daten.email)}
   ${zeile('Bestellnummer / Referenz', daten.bestellnummer)}
   ${zeile('Artikel', `${daten.artikel} × ${daten.menge}`)}
-  ${zeile('Gewicht Ware', `${gewicht.gramm} g`)}
+  ${zeile('Gewicht inkl. Karton', `${datei.brutto} g (${easylogGewichtKg(datei.brutto)} kg)`)}
   ${zeile('DHL-Produkt', paket)}
 
   <div class="block">
@@ -370,8 +480,9 @@ function versandSeite(daten, token) {
     </div>
   </div>
 
-  <p class="note">${htmlEsc(gewicht.hinweis)}. Vorgeschlagenes Produkt: ${htmlEsc(paket)}.</p>
-  <a class="dhl" href="https://www.dhl.de/de/privatkunden/pakete-versenden/pakete-national-versenden.html" target="_blank" rel="noopener">DHL Versand öffnen</a>
+  <p class="note">${htmlEsc(gewicht.hinweis)}. Vorgeschlagenes Produkt: ${htmlEsc(paket)}. Die Abrechnungsnummer bleibt leer — Easylog nimmt euer Geschäftskundenkonto.</p>
+  ${download ? `<a class="dhl" href="${download}">Easylog-Datei herunterladen</a>` : ''}
+  <a class="dhl sek" href="https://www.dhl.de/de/geschaeftskunden.html" target="_blank" rel="noopener">DHL Geschäftskunden öffnen</a>
   ${token ? `<p class="note"><a href="/bestaetigen?t=${htmlEsc(token)}">Zur Bestellbestätigung</a></p>` : ''}
 </main>
 <script>
@@ -409,6 +520,17 @@ async function handleVersand(request, env, url) {
     return new Response(htmlSeite('Ungültig', '<p class="mono">Link ungültig</p><h1>Dieser Versandlink gilt nicht.</h1>'), {
       status: 403,
       headers: { 'Content-Type': 'text/html; charset=UTF-8', 'X-Robots-Tag': 'noindex' },
+    });
+  }
+  if (url.searchParams.get('download')) {
+    const datei = easylogDatei(daten);
+    return new Response(datei.inhalt, {
+      headers: {
+        'Content-Type': 'text/csv; charset=UTF-8',
+        'Content-Disposition': `attachment; filename="${datei.filename}"`,
+        'Cache-Control': 'no-store',
+        'X-Robots-Tag': 'noindex',
+      },
     });
   }
   return new Response(versandSeite(daten, token), {
@@ -930,7 +1052,12 @@ async function handleBestellung(request, env) {
     'Wenn das Geld da ist — Bestätigung senden:',
     bestaetigenUrl,
     '',
-    'Danach Label-Daten für DHL (Kopierknöpfe):',
+    'DHL Easylog-Importdatei liegt an. In Easylog: Sendungsdatenimport',
+    'mit Vorlage „DHL Easylogkonvertiert-Vorlage Sendungsdatenimport“.',
+    'Erneut laden:',
+    `${versandUrl}&download=1`,
+    '',
+    'Label-Daten mit Kopierknöpfen:',
     versandUrl,
   ].filter((zeile) => zeile !== null).join('\n');
 
@@ -940,6 +1067,7 @@ async function handleBestellung(request, env) {
     reply_to: email,
     subject: `[Vorkasse] ${bestellnummer} — ${artikel}`,
     text: intern,
+    attachments: [easylogAnhang(daten)],
   });
 
   if (!internOk) {
@@ -1064,9 +1192,15 @@ async function handlePaypal(request, env) {
       '',
       'Gesetzliche Bestellbestätigung geht an den Kunden.',
       '',
-      'Label-Daten für DHL (Kopierknöpfe):',
+      'DHL Easylog-Importdatei liegt an. In Easylog: Sendungsdatenimport',
+      'mit Vorlage „DHL Easylogkonvertiert-Vorlage Sendungsdatenimport“.',
+      'Erneut laden:',
+      `${versandUrl}&download=1`,
+      '',
+      'Label-Daten mit Kopierknöpfen:',
       versandUrl,
     ].filter(Boolean).join('\n'),
+    attachments: [easylogAnhang(daten)],
   });
   if (!internOk) {
     return new Response('MAIL_FAIL', { status: 500 });
@@ -1102,7 +1236,7 @@ export default {
     const pfad = url.pathname.replace(/\/$/, '') || '/';
 
     if (request.method === 'GET' && (pfad === '/' || pfad === '/ping' || pfad === '/ping.php')) {
-      return json({ ok: true, runtime: 'cloudflare-worker', version: 8, time: new Date().toISOString() }, 200, origin);
+      return json({ ok: true, runtime: 'cloudflare-worker', version: 9, time: new Date().toISOString() }, 200, origin);
     }
 
     if (pfad === '/bestaetigen') {

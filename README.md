@@ -18,7 +18,11 @@ Die URL sieht so aus:
 
 `https://kanid-kontakt.<dein-subdomain>.workers.dev`
 
-Zuerst im Browser öffnen. Es muss JSON kommen: `"ok": true`, `"runtime": "cloudflare-worker"`.
+Zuerst im Browser öffnen. Es muss JSON kommen: `"ok": true`, `"runtime": "cloudflare-worker"`, aktuell `"version": 9`.
+
+Nach Vorkasse und PayPal hängt der Worker die ausgefüllte DHL-Easylog-Datei an die interne Mail
+(`{Bestellnummer}-dhl-easylog.csv`). Dieselbe Datei gibt es unter `/versand?t=…&download=1`.
+Vorlage in Easylog: **DHL Easylogkonvertiert-Vorlage Sendungsdatenimport**.
 
 ## Mail einrichten (Resend, Free)
 
