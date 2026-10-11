@@ -2,6 +2,20 @@
 // dash.cloudflare.com → Workers & Pages → kanid-kontakt → Edit code
 //
 // Secret: RESEND_API_KEY
+//
+// v12 (2026-10, Branch widerruf-online-2026-10):
+//   - POST /widerruf: elektronische Widerrufsfunktion nach Paragraph 356a BGB
+//     (Eingangsbestaetigung an den Verbraucher mit Inhalt, Datum und Uhrzeit,
+//     Meldung an info@kanid.de).
+//   - Kontaktformular: Feld "vorzeitig" (ausdrueckliches Verlangen des
+//     vorzeitigen Leistungsbeginns, Paragraph 356 Abs. 5 / 357a Abs. 2 BGB)
+//     wird dokumentiert.
+//   - Staging: Variable STAGING = "1" (nur am Skript kanid-kontakt-staging).
+//     Dann gehen ALLE Mails ausschliesslich an info@kanid.de mit "[TEST]" im
+//     Betreff, Turnstile wird nur protokolliert, und ohne RESEND_API_KEY
+//     werden Mails nicht versendet, sondern in der Antwort zurueckgegeben
+//     (Trockenlauf). Am Produktiv-Skript ist STAGING nicht gesetzt — dort
+//     aendert sich am Verhalten der bestehenden Wege nichts.
 
 const ERLAUBT = [
   'https://kanid.de',
@@ -13,7 +27,7 @@ const EMPFAENGER = 'info@kanid.de';
 const DANKE = 'https://kanid.de/danke';
 
 const ARTEN = {
-  konstruktion: { tag: 'Retainer', label: 'Konstruktionskapazität' },
+  konstruktion: { tag: 'Konstruktion', label: 'Konstruktionskapazität' },
   einzelprojekt: { tag: 'Projekt', label: 'Einzelprojekt' },
   factory: { tag: 'Factory', label: 'Factory-Produkt' },
   sonstiges: { tag: 'Sonstiges', label: 'Sonstiges' },
@@ -69,13 +83,31 @@ function antwort(request, data, status) {
     return json(data, status, origin);
   }
   if (data.ok) {
-    return Response.redirect(DANKE, 303);
+    return Response.redirect(data.weiter || dankeFuer(origin), 303);
   }
   const text = data.meldung || 'Die Nachricht konnte nicht gesendet werden.';
   return new Response(
     `<!DOCTYPE html><html lang="de"><meta charset="UTF-8"><title>Fehler</title><p>${text}</p><p><a href="https://kanid.de/#kontakt">Zurück</a></p>`,
     { status, headers: { ...corsHeaders(origin), 'Content-Type': 'text/html; charset=UTF-8' } },
   );
+}
+
+// Danke-Seite der Website, von der das Formular kam (Staging landet auf Staging).
+function seitenOrigin(origin, request) {
+  let o = origin || '';
+  if (!o && request) {
+    try { o = new URL(request.headers.get('Referer') || '').origin; } catch { o = ''; }
+  }
+  return o && originErlaubt(o) ? o : 'https://kanid.de';
+}
+
+function dankeFuer(origin) {
+  const o = seitenOrigin(origin);
+  return o === 'https://kanid.de' ? DANKE : `${o}/danke/`;
+}
+
+function istStaging(env) {
+  return !!env && env.STAGING === '1';
 }
 
 function feld(value, max) {
@@ -188,6 +220,30 @@ async function sendeResend(apiKey, brief) {
   return antwort.ok;
 }
 
+// Einziger Versandweg. Produktion: unveraendert sendeResend. Staging: nur an
+// info@kanid.de, Betreff mit [TEST]; ohne API-Key Trockenlauf.
+async function sende(env, brief, trockenlauf) {
+  if (istStaging(env)) {
+    const original = Array.isArray(brief.to) ? brief.to.join(', ') : String(brief.to || '');
+    brief = {
+      ...brief,
+      to: [EMPFAENGER],
+      subject: `[TEST] ${String(brief.subject || '').replace(/^\[TEST\]\s*/, '')}`,
+      headers: { ...(brief.headers || {}), 'X-KANID-Staging-Urspruenglich-an': original },
+    };
+    if (!env.RESEND_API_KEY) {
+      console.log(JSON.stringify({ event: 'staging_trockenlauf', subject: brief.subject, original }));
+      if (trockenlauf) trockenlauf.push({ an: brief.to, urspruenglich_an: original, betreff: brief.subject, text: brief.text, html: brief.html || null });
+      return true;
+    }
+  }
+  return sendeResend(env.RESEND_API_KEY, brief);
+}
+
+function versandBereit(env) {
+  return !!env.RESEND_API_KEY || istStaging(env);
+}
+
 function htmlEsc(wert) {
   return String(wert)
     .replace(/&/g, '&amp;')
@@ -209,7 +265,11 @@ function feldZelle(label, wert, breite) {
 
 // Neutral: uebernimmt bewusst KEINE Formulareingaben (Name, Firma, Nachricht),
 // damit das Formular nicht als Spam-Relay an fremde Adressen missbraucht wird.
-function bestaetigungHtml() {
+// Fester Satz (keine Formulareingabe) fuer die Eingangsbestaetigung, wenn die
+// Checkbox angekreuzt war. ENTWURF — Wortlaut vor Go-live pruefen lassen.
+const VORZEITIG_BESTAETIGUNG = 'Sie haben mit Ihrer Anfrage ausdrücklich verlangt, dass wir mit der Erbringung der Dienstleistung vor Ablauf der Widerrufsfrist beginnen, und bestätigt, dass Ihnen die Folgen bekannt sind (Wertersatz bei Widerruf, Erlöschen des Widerrufsrechts bei vollständiger Vertragserfüllung). Das gilt erst für einen Vertrag, den wir mit Ihnen schließen.';
+
+function bestaetigungHtml(vorzeitig = false) {
   const heute = new Date();
   const stand = heute.toISOString().slice(0, 7);
   const datum = heute.toISOString().slice(0, 10);
@@ -265,6 +325,7 @@ function bestaetigungHtml() {
           <tr>
             <td style="padding:0 24px 28px;font-family:Arial,Helvetica,sans-serif;font-size:16px;line-height:1.55;color:#21262a;">
               Wir antworten werktags innerhalb weniger Stunden.<br><br>
+              ${vorzeitig ? `${htmlEsc(VORZEITIG_BESTAETIGUNG)}<br><br>` : ''}
               Mit freundlichen Grüßen<br>
               <strong style="color:#0e2733;">Konstantin Vinogradov</strong>
             </td>
@@ -877,7 +938,7 @@ async function handleBestaetigen(request, env, url) {
   };
   if (anhang) brief.attachments = [anhang];
 
-  const ok = await sendeResend(env.RESEND_API_KEY, brief);
+  const ok = await sende(env, brief);
   if (!ok) {
     return new Response(htmlSeite('Fehler', '<p>Die Bestätigung konnte nicht gesendet werden. Resend prüfen.</p>'), {
       status: 500,
@@ -1134,7 +1195,7 @@ async function handleBestellung(request, env) {
     versandUrl,
   ].filter((zeile) => zeile !== null).join('\n');
 
-  const internOk = await sendeResend(env.RESEND_API_KEY, {
+  const internOk = await sende(env, {
     from: 'KANID Factory <info@kanid.de>',
     to: [EMPFAENGER],
     reply_to: email,
@@ -1172,7 +1233,7 @@ async function handleBestellung(request, env) {
     'info@kanid.de',
   ].join('\n');
 
-  await sendeResend(env.RESEND_API_KEY, {
+  await sende(env, {
     from: 'KANID Factory <info@kanid.de>',
     to: [email],
     subject: `Ihre Bestellung ${bestellnummer} — bitte überweisen`,
@@ -1248,7 +1309,7 @@ async function handlePaypal(request, env) {
   const token = await signiereAuftrag(daten, geheim);
   const versandUrl = `${new URL(request.url).origin}/versand?t=${token}`;
 
-  const internOk = await sendeResend(env.RESEND_API_KEY, {
+  const internOk = await sende(env, {
     from: 'KANID Factory <info@kanid.de>',
     to: [EMPFAENGER],
     reply_to: email,
@@ -1289,12 +1350,241 @@ async function handlePaypal(request, env) {
   };
   if (anhang) brief.attachments = [anhang];
 
-  const kundeOk = await sendeResend(env.RESEND_API_KEY, brief);
+  const kundeOk = await sende(env, brief);
   if (!kundeOk) {
     return new Response('MAIL_FAIL', { status: 500 });
   }
 
   return new Response('OK', { status: 200 });
+}
+
+// ---- Elektronische Widerrufsfunktion (Paragraph 356a BGB, v12) -------------
+// Abs. 2: Name, Angaben zur Identifizierung des Vertrags, elektronisches
+// Kommunikationsmittel (E-Mail) fuer die Eingangsbestaetigung.
+// Abs. 4: unverzueglich Eingangsbestaetigung auf dauerhaftem Datentraeger mit
+// dem Inhalt der Erklaerung sowie Datum und Uhrzeit des Eingangs.
+// Spamschutz bewusst milder als beim Kontaktformular: Ein verworfener echter
+// Widerruf waere ein Rechtsproblem. Herkunft und Honeypot wie gehabt, eigenes
+// Ratenlimit, Turnstile wird nur protokolliert, kein Inhaltsfilter.
+const WIDERRUF_VERTRAEGE = {
+  waren: 'Warenkauf (KANID Factory)',
+  dienstleistung: 'Dienstleistung (Produktentwicklung)',
+};
+const WIDERRUF_RATE_MAX = 5;
+const widerrufRate = new Map();
+
+function widerrufRateUeberschritten(ip) {
+  if (!ip) return false;
+  const jetzt = Date.now();
+  const liste = (widerrufRate.get(ip) || []).filter((t) => t > jetzt - RATE_FENSTER_MS);
+  if (liste.length >= WIDERRUF_RATE_MAX) {
+    widerrufRate.set(ip, liste);
+    return true;
+  }
+  liste.push(jetzt);
+  widerrufRate.set(ip, liste);
+  if (widerrufRate.size > 5000) widerrufRate.clear();
+  return false;
+}
+
+function zeitBerlin(datum) {
+  const teile = new Intl.DateTimeFormat('de-DE', {
+    timeZone: 'Europe/Berlin',
+    day: '2-digit', month: '2-digit', year: 'numeric',
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+    timeZoneName: 'short',
+  }).format(datum);
+  // "11.10.2026, 10:55:01 MESZ" -> "11.10.2026 um 10:55:01 Uhr (MESZ)"
+  const m = teile.match(/^(.+?),\s*(\d{2}:\d{2}:\d{2})\s*(.*)$/);
+  return m ? `${m[1]} um ${m[2]} Uhr${m[3] ? ` (${m[3]})` : ''}` : teile;
+}
+
+function widerrufKennung(datum) {
+  const tag = datum.toISOString().slice(0, 10).replace(/-/g, '');
+  const zufall = [...crypto.getRandomValues(new Uint8Array(3))].map((b) => b.toString(16).padStart(2, '0')).join('').toUpperCase();
+  return `WR-${tag}-${zufall}`;
+}
+
+function widerrufInhalt(d, mitNachricht) {
+  return [
+    ['Erklärung', `Hiermit widerrufe ich den von mir abgeschlossenen Vertrag – ${d.vertragLabel}.`],
+    ['Vertrag', d.vertragLabel],
+    ['Bestell-/Auftragsnummer', d.kennung || '—'],
+    ['Bestell-/Vertragsdatum', d.datum || '—'],
+    ['Name', d.name],
+    ['E-Mail für die Eingangsbestätigung', d.email],
+    ['Nachricht', mitNachricht ? (d.nachricht || '—') : d.nachrichtKunde],
+  ];
+}
+
+function widerrufText(d, fuerKunde) {
+  const zeilen = widerrufInhalt(d, !fuerKunde);
+  return [
+    fuerKunde ? 'Guten Tag,' : 'Widerruf über die Online-Widerrufsfunktion auf kanid.de (§ 356a BGB)',
+    '',
+    fuerKunde
+      ? 'hiermit bestätigen wir den Eingang Ihrer Widerrufserklärung, die Sie über die Widerrufsfunktion auf unserer Website abgegeben haben.'
+      : 'Eingangsbestätigung an den Verbraucher wurde automatisch versendet (siehe unten).',
+    '',
+    `Eingegangen am: ${d.eingangText}`,
+    `Eingang (UTC): ${d.eingangUtc}`,
+    `Vorgangsnummer: ${d.id}`,
+    '',
+    fuerKunde ? 'Inhalt Ihrer Widerrufserklärung:' : 'Inhalt der Widerrufserklärung:',
+    ...zeilen.map(([k, v]) => `${k}: ${v}`),
+    '',
+    ...(fuerKunde ? [
+      'Bitte bewahren Sie diese E-Mail auf. Wir melden uns zur weiteren Abwicklung (Rückzahlung bzw. Rücksendung) bei Ihnen.',
+      '',
+      'KANID UG (haftungsbeschränkt)',
+      'Heinrich-Hertz-Str. 11',
+      '70794 Filderstadt',
+      'info@kanid.de · +49 1520 7921611',
+    ] : [
+      `IP: ${d.ip || 'unbekannt'}${d.land ? ` (${d.land})` : ''}`,
+      `Bot-Check: ${d.turnstile}`,
+      `Herkunft: ${d.herkunft}`,
+      `Eingangsbestätigung an Kunde: ${d.kundeOk === undefined ? 'wird versendet' : (d.kundeOk ? 'versendet' : 'FEHLGESCHLAGEN — bitte manuell bestätigen')}`,
+    ]),
+  ].join('\n');
+}
+
+function widerrufHtml(d) {
+  const zeilen = widerrufInhalt(d, false).map(([k, v]) => `<tr>
+      <td style="padding:8px 12px;border:1px solid #0e2733;font-family:Consolas,'Courier New',monospace;font-size:11px;letter-spacing:0.08em;text-transform:uppercase;color:#1b6ba4;vertical-align:top;width:38%;">${htmlEsc(k)}</td>
+      <td style="padding:8px 12px;border:1px solid #0e2733;font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.45;color:#0e2733;vertical-align:top;">${htmlZeilen(v)}</td>
+    </tr>`).join('');
+  return `<!DOCTYPE html>
+<html lang="de">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Eingangsbestätigung Ihres Widerrufs</title></head>
+<body style="margin:0;padding:0;background:#e9ecee;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" bgcolor="#e9ecee" style="background:#e9ecee;">
+    <tr><td align="center" style="padding:32px 12px;">
+      <table role="presentation" width="600" cellpadding="0" cellspacing="0" bgcolor="#ffffff" style="width:600px;max-width:600px;background:#ffffff;border:1px solid #0e2733;border-collapse:collapse;">
+        <tr><td style="padding:22px 24px 18px;border-bottom:1px solid #0e2733;">
+          <table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>
+            <td width="220" style="vertical-align:middle;"><img src="https://kanid.de/assets/img/LOGO.png" width="176" height="48" alt="KANID" style="display:block;width:176px;height:auto;border:0;"></td>
+            <td align="right" style="vertical-align:middle;font-family:Consolas,'Courier New',monospace;font-size:11px;letter-spacing:0.1em;text-transform:uppercase;color:#1b6ba4;line-height:1.55;">Eingangsbestätigung<br>${htmlEsc(d.id)}</td>
+          </tr></table>
+        </td></tr>
+        <tr><td style="padding:28px 24px 8px;font-family:Consolas,'Courier New',monospace;font-size:11px;letter-spacing:0.14em;text-transform:uppercase;color:#1b6ba4;">Widerruf eingegangen</td></tr>
+        <tr><td style="padding:0 24px 16px;font-family:Arial,Helvetica,sans-serif;font-size:24px;line-height:1.2;font-weight:700;color:#0e2733;">Wir haben Ihren Widerruf erhalten.</td></tr>
+        <tr><td style="padding:0 24px 18px;font-family:Arial,Helvetica,sans-serif;font-size:16px;line-height:1.55;color:#21262a;">
+          Guten Tag,<br><br>
+          hiermit bestätigen wir den Eingang Ihrer Widerrufserklärung, die Sie über die Widerrufsfunktion auf unserer Website abgegeben haben.<br><br>
+          <strong style="color:#0e2733;">Eingegangen am ${htmlEsc(d.eingangText)}</strong>
+        </td></tr>
+        <tr><td style="padding:0 24px 22px;">
+          <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">${zeilen}</table>
+        </td></tr>
+        <tr><td style="padding:0 24px 28px;font-family:Arial,Helvetica,sans-serif;font-size:16px;line-height:1.55;color:#21262a;">
+          Bitte bewahren Sie diese E-Mail auf. Wir melden uns zur weiteren Abwicklung (Rückzahlung bzw. Rücksendung) bei Ihnen.<br><br>
+          Mit freundlichen Grüßen<br><strong style="color:#0e2733;">KANID UG (haftungsbeschränkt)</strong><br>
+          Heinrich-Hertz-Str. 11 · 70794 Filderstadt<br>info@kanid.de · +49 1520 7921611
+        </td></tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>`;
+}
+
+async function handleWiderruf(request, env) {
+  const origin = request.headers.get('Origin') || '';
+  const site = seitenOrigin(origin, request);
+  if (herkunftFremd(request)) {
+    return antwort(request, { ok: false, error: 'origin', meldung: 'Ungültige Herkunft.' }, 403);
+  }
+  const ip = clientIp(request);
+  if (widerrufRateUeberschritten(ip)) {
+    console.log(JSON.stringify({ event: 'widerruf_ratelimit', ip: ipKurz(ip) }));
+    return antwort(request, { ok: false, error: 'rate', meldung: 'Zu viele Übermittlungen in kurzer Zeit. Bitte versuchen Sie es in einigen Minuten erneut oder senden Sie Ihren Widerruf per E-Mail an info@kanid.de.' }, 429);
+  }
+
+  const form = await request.formData();
+  const honeypot = feld(form.get('bot-field'), 80) + feld(form.get('_gotcha'), 80);
+  if (honeypot) {
+    console.log(JSON.stringify({ event: 'widerruf_verworfen', grund: 'honeypot', ip: ipKurz(ip) }));
+    return antwort(request, { ok: true, mail: true }, 200);
+  }
+
+  const name = feld(form.get('name'), 120);
+  const email = feld(form.get('email'), 180);
+  const vertrag = feld(form.get('vertrag'), 20);
+  const kennung = feld(form.get('kennung'), 120);
+  const datum = feld(form.get('datum'), 40);
+  const nachricht = typeof form.get('nachricht') === 'string'
+    ? form.get('nachricht').replace(/\0/g, '').trim().slice(0, 2000)
+    : '';
+  const vertragLabel = WIDERRUF_VERTRAEGE[vertrag];
+
+  if (!name || !email || !vertragLabel) {
+    return antwort(request, { ok: false, error: 'validation', meldung: 'Bitte geben Sie Ihren Namen, Ihre E-Mail-Adresse und die Art des Vertrags an.' }, 422);
+  }
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    return antwort(request, { ok: false, error: 'validation', meldung: 'Bitte geben Sie eine gültige E-Mail-Adresse ein — an sie geht die Eingangsbestätigung.' }, 422);
+  }
+  if (!kennung && !datum) {
+    return antwort(request, { ok: false, error: 'validation', meldung: 'Bitte geben Sie die Bestell- bzw. Auftragsnummer oder das Bestell- bzw. Vertragsdatum an, damit wir den Vertrag zuordnen können.' }, 422);
+  }
+
+  const turnstile = await pruefeTurnstile(feld(form.get('cf-turnstile-response'), 2048), ip, env);
+
+  if (!versandBereit(env)) {
+    return antwort(request, { ok: false, error: 'config', meldung: 'Die Übermittlung ist gerade nicht möglich. Bitte senden Sie Ihren Widerruf per E-Mail an info@kanid.de.' }, 500);
+  }
+
+  const eingang = new Date();
+  const d = {
+    id: widerrufKennung(eingang),
+    eingangUtc: eingang.toISOString(),
+    eingangText: zeitBerlin(eingang),
+    name, email, vertrag, vertragLabel, kennung, datum, nachricht,
+    nachrichtKunde: !nachricht ? '—' : (LINK_MUSTER.test(nachricht)
+      ? '[Ihre Nachricht enthält Links und wird hier aus Sicherheitsgründen nicht wiederholt. Sie liegt uns vollständig vor.]'
+      : nachricht),
+    ip, land: request.cf?.country || '',
+    turnstile: turnstile.ok ? 'Turnstile ok' : `Turnstile ${turnstile.grund} (nicht erzwungen)`,
+    herkunft: site,
+  };
+  const trockenlauf = istStaging(env) ? [] : null;
+
+  const internOk = await sende(env, {
+    from: 'KANID Widerruf <info@kanid.de>',
+    to: [EMPFAENGER],
+    reply_to: email,
+    subject: `[Widerruf] ${d.id} — ${vertragLabel} — ${name}`,
+    text: widerrufText(d, false),
+  }, trockenlauf);
+  if (!internOk) {
+    console.log(JSON.stringify({ event: 'widerruf_mail_fehler', id: d.id }));
+    return antwort(request, { ok: false, error: 'mail', meldung: 'Ihr Widerruf konnte gerade nicht übermittelt werden. Bitte senden Sie ihn per E-Mail an info@kanid.de oder versuchen Sie es erneut.' }, 500);
+  }
+
+  const kundeOk = await sende(env, {
+    from: 'KANID <info@kanid.de>',
+    to: [email],
+    reply_to: EMPFAENGER,
+    subject: `Eingangsbestätigung Ihres Widerrufs — ${d.id}`,
+    text: widerrufText(d, true),
+    html: widerrufHtml(d),
+  }, trockenlauf);
+  if (!kundeOk) {
+    // Interne Nachricht ist raus, der Widerruf ist zugegangen. Fehlende
+    // Bestaetigung wird KANID gesondert gemeldet, damit sie manuell nachgeht.
+    await sende(env, {
+      from: 'KANID Widerruf <info@kanid.de>',
+      to: [EMPFAENGER],
+      subject: `[Widerruf] ${d.id} — Eingangsbestätigung an ${email} FEHLGESCHLAGEN`,
+      text: widerrufText({ ...d, kundeOk: false }, false),
+    }, trockenlauf);
+  }
+  console.log(JSON.stringify({ event: 'widerruf_eingang', id: d.id, vertrag, kundeOk, turnstile: turnstile.grund, ip: ipKurz(ip) }));
+
+  const weiter = `${site}/widerruf/online/eingegangen/?id=${encodeURIComponent(d.id)}&t=${encodeURIComponent(d.eingangUtc)}${kundeOk ? '' : '&b=0'}`;
+  const daten = { ok: true, mail: true, id: d.id, eingang: d.eingangUtc, eingang_text: d.eingangText, bestaetigung: kundeOk, weiter };
+  if (trockenlauf) daten.staging_trockenlauf = trockenlauf;
+  return antwort(request, daten, 200);
 }
 
 export default {
@@ -1309,7 +1599,7 @@ export default {
     const pfad = url.pathname.replace(/\/$/, '') || '/';
 
     if (request.method === 'GET' && (pfad === '/' || pfad === '/ping' || pfad === '/ping.php')) {
-      return json({ ok: true, runtime: 'cloudflare-worker', version: 11, time: new Date().toISOString() }, 200, origin);
+      return json({ ok: true, runtime: 'cloudflare-worker', version: 12, time: new Date().toISOString() }, 200, origin);
     }
 
     if (pfad === '/bestaetigen') {
@@ -1337,6 +1627,10 @@ export default {
 
     if (pfad === '/bestellung') {
       return handleBestellung(request, env);
+    }
+
+    if (pfad === '/widerruf') {
+      return handleWiderruf(request, env);
     }
 
     if (herkunftFremd(request)) {
@@ -1376,6 +1670,12 @@ export default {
       ? form.get('message').replace(/\0/g, '').trim().slice(0, 5000)
       : '';
 
+    // Ausdrueckliches Verlangen des vorzeitigen Leistungsbeginns (Checkbox,
+    // optional, nicht vorausgewaehlt). Wortlaut-Fassung wird mitgeschickt,
+    // damit spaeter nachvollziehbar ist, welchem Text zugestimmt wurde.
+    const vorzeitig = feld(form.get('vorzeitig'), 10) === 'ja';
+    const vorzeitigFassung = feld(form.get('vorzeitig_fassung'), 60);
+    const vorzeitigText = feld(form.get('vorzeitig_text'), 600);
     const artEintrag = ARTEN[art];
     const quelle = QUELLEN.has(quelleRoh) ? quelleRoh : '';
 
@@ -1395,7 +1695,7 @@ export default {
       erzwingen: TURNSTILE_ERZWINGEN,
       ip: ipKurz(ip),
     }));
-    if (!turnstile.ok && TURNSTILE_ERZWINGEN && turnstile.grund !== 'fehler-siteverify') {
+    if (!turnstile.ok && TURNSTILE_ERZWINGEN && !istStaging(env) && turnstile.grund !== 'fehler-siteverify') {
       return verwerfen(request, `turnstile-${turnstile.grund}`);
     }
 
@@ -1407,7 +1707,7 @@ export default {
       });
     }
 
-    if (!env.RESEND_API_KEY) {
+    if (!versandBereit(env)) {
       return antwort(request, {
         ok: false,
         error: 'config',
@@ -1432,11 +1732,16 @@ export default {
       `Zeit:    ${new Date().toISOString()} UTC`,
       `Bot-Check: ${turnstile.ok ? 'Turnstile ok' : `Turnstile ${turnstile.grund}`}`,
       '',
+      `Vorzeitiger Leistungsbeginn verlangt (§ 356 Abs. 5 / § 357a Abs. 2 BGB): ${vorzeitig ? 'JA — Checkbox angekreuzt' : 'nein (Checkbox nicht angekreuzt)'}`,
+      vorzeitig ? `  Zeitpunkt: ${new Date().toISOString()} UTC` : null,
+      vorzeitig && vorzeitigFassung ? `  Wortlaut-Fassung: ${vorzeitigFassung}` : null,
+      vorzeitig && vorzeitigText ? `  Wortlaut: „${vorzeitigText}“` : null,
+      '',
       'Nachricht:',
       message,
     ].filter((zeile) => zeile !== null).join('\n');
 
-    const internOk = await sendeResend(env.RESEND_API_KEY, {
+    const internOk = await sende(env, {
       from: 'KANID Kontaktformular <info@kanid.de>',
       to: [EMPFAENGER],
       reply_to: email,
@@ -1460,6 +1765,8 @@ export default {
       '',
       'Wir antworten werktags innerhalb weniger Stunden.',
       '',
+      vorzeitig ? VORZEITIG_BESTAETIGUNG : null,
+      vorzeitig ? '' : null,
       'Falls Sie uns nicht geschrieben haben, können Sie diese E-Mail ignorieren.',
       '',
       'KANID UG (haftungsbeschränkt)',
@@ -1468,12 +1775,12 @@ export default {
       'info@kanid.de · +49 1520 7921611',
     ].filter((zeile) => zeile !== null).join('\n');
 
-    await sendeResend(env.RESEND_API_KEY, {
+    await sende(env, {
       from: 'KANID <info@kanid.de>',
       to: [email],
       subject: 'Ihre Nachricht an KANID',
       text: bestaetigung,
-      html: bestaetigungHtml(),
+      html: bestaetigungHtml(vorzeitig),
     });
 
     return antwort(request, { ok: true, mail: true }, 200);

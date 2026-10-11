@@ -1,3 +1,13 @@
 name = "kanid-kontakt"
 main = "worker.js"
 compatibility_date = "2026-08-13"
+
+# Staging/Preview (2026-10): eigenes Skript, NIE das Produktiv-Skript.
+#   wrangler deploy --env staging   ->  kanid-kontakt-staging.lucky-sea-ca19.workers.dev
+# STAGING = "1": alle Mails nur an info@kanid.de mit [TEST], Turnstile nur
+# protokolliert, ohne RESEND_API_KEY Trockenlauf (Mails stehen in der Antwort).
+[env.staging]
+name = "kanid-kontakt-staging"
+workers_dev = true
+[env.staging.vars]
+STAGING = "1"
