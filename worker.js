@@ -9,6 +9,12 @@
 //     Kopie an info@kanid.de). Texte aus kanid-dokumente
 //     agb-2026-10/Widerrufsbutton_Texte.md.
 //   - Bestellbestaetigung: Belehrungssatz zur Online-Widerrufsfunktion.
+// v13 (2026-10-11, Branch widerruf-ip-gewaehr-2026-10):
+//   - Widerruf: IP-Adresse nur noch fuer das Rate-Limit, nicht mehr in der
+//     Mail an KANID und nicht im Log-Eintrag des Eingangs (Datenschutz 3.2c).
+//   - Bestellbestaetigung (PayPal-IPN und /bestaetigen): harmonisierte
+//     EU-Mitteilung zur gesetzlichen Gewaehrleistung (VO (EU) 2025/1960) als
+//     PDF-Anhang und Bild in der HTML-Mail.
 //   - Kontaktformular: unveraendert (die Zustimmung zum vorzeitigen
 //     Leistungsbeginn gehoert zum Vertragsschluss, nicht zur Anfrage).
 //   - Staging: Variable STAGING = "1" (nur am Skript kanid-kontakt-staging).
@@ -754,6 +760,8 @@ function bestellBestaetigungText(daten) {
     '',
     WIDERRUF_TEXT,
     '',
+    EU_GEWAEHR_TEXT,
+    '',
     'Es gelten unsere AGB für Verbraucher: https://kanid.de/agb-verbraucher',
     '',
     'KANID UG (haftungsbeschränkt) · Heinrich-Hertz-Str. 11 · 70794 Filderstadt',
@@ -835,8 +843,15 @@ function bestellBestaetigungHtml(daten) {
             <td style="padding:0 24px 24px;font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.55;color:#0e2733;white-space:pre-wrap;">${htmlEsc(WIDERRUF_TEXT)}</td>
           </tr>
           <tr>
+            <td style="padding:0 24px 24px;font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.55;color:#0e2733;">
+              <strong style="color:#003399;">Ihre gesetzlichen Gewährleistungsrechte</strong><br>
+              <a href="${EU_GEWAEHR_PNG}" style="display:block;margin:10px 0 8px;border:1px solid #d5dadd;"><img src="${EU_GEWAEHR_PNG}" width="550" alt="EU-Mitteilung Gesetzliche Gewährleistung: mindestens zwei Jahre gesetzliche Gewährleistung der Vertragsmäßigkeit für Waren, die in der EU verkauft werden. Die vollständige Mitteilung liegt dieser E-Mail als PDF bei." style="display:block;width:100%;max-width:550px;height:auto;border:0;"></a>
+              Die Mitteilung liegt außerdem als PDF bei. Mehr zu Ihren Rechten: <a href="https://europa.eu/youreurope/garantien" style="color:#003399;">europa.eu/youreurope/garantien</a>
+            </td>
+          </tr>
+          <tr>
             <td style="padding:0 24px 28px;font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.55;color:#21262a;">
-              Das Muster-Widerrufsformular liegt als PDF bei.<br>
+              Das Muster-Widerrufsformular und die EU-Mitteilung zur gesetzlichen Gewährleistung liegen als PDF bei.<br>
               AGB für Verbraucher: <a href="https://kanid.de/agb-verbraucher" style="color:#1b6ba4;">kanid.de/agb-verbraucher</a>
               <br><br>Mit freundlichen Grüßen<br><strong>Konstantin Vinogradov</strong>
             </td>
@@ -863,6 +878,38 @@ function bestellBestaetigungHtml(daten) {
   </table>
 </body>
 </html>`;
+}
+
+// Harmonisierte EU-Mitteilung zur gesetzlichen Gewaehrleistung (VO (EU)
+// 2025/1960 Anhang I, offizielle deutsche Farbfassung). Seit 27.09.2026 vor
+// Vertragsschluss Pflicht; die Kommission empfiehlt sie auch in der
+// Bestaetigungs-Mail (Practical Guidelines Ziff. 2.3). Sie liegt deshalb als
+// PDF bei (dauerhafter Datentraeger) und steht als Bild in der HTML-Mail.
+const EU_GEWAEHR_PNG = 'https://kanid.de/assets/eu/gesetzliche-gewaehrleistung-eu-mitteilung.png';
+const EU_GEWAEHR_PDF = 'https://kanid.de/assets/eu/gesetzliche-gewaehrleistung-eu-mitteilung.pdf';
+const EU_GEWAEHR_TEXT = `Ihre gesetzlichen Gewährleistungsrechte
+
+Die harmonisierte EU-Mitteilung „Gesetzliche Gewährleistung“ liegt dieser E-Mail als PDF bei (gesetzliche-gewaehrleistung-eu-mitteilung.pdf). Mehr zu Ihren Rechten: https://europa.eu/youreurope/garantien`;
+
+async function dateiAnhang(url, filename) {
+  try {
+    const antwort = await fetch(url);
+    if (!antwort.ok) return null;
+    const bytes = new Uint8Array(await antwort.arrayBuffer());
+    let bin = '';
+    for (let i = 0; i < bytes.length; i += 1) bin += String.fromCharCode(bytes[i]);
+    return { filename, content: btoa(bin) };
+  } catch (fehler) {
+    return null;
+  }
+}
+
+async function bestellAnhaenge() {
+  const liste = await Promise.all([
+    pdfAnhang(),
+    dateiAnhang(EU_GEWAEHR_PDF, 'gesetzliche-gewaehrleistung-eu-mitteilung.pdf'),
+  ]);
+  return liste.filter(Boolean);
 }
 
 async function pdfAnhang() {
@@ -923,7 +970,7 @@ async function handleBestaetigen(request, env, url) {
     return new Response('Nur GET oder POST', { status: 405 });
   }
 
-  const anhang = await pdfAnhang();
+  const anhaenge = await bestellAnhaenge();
   const brief = {
     from: 'KANID Factory <info@kanid.de>',
     to: [daten.email],
@@ -932,7 +979,7 @@ async function handleBestaetigen(request, env, url) {
     text: bestellBestaetigungText(daten),
     html: bestellBestaetigungHtml(daten),
   };
-  if (anhang) brief.attachments = [anhang];
+  if (anhaenge.length) brief.attachments = anhaenge;
 
   const ok = await sende(env, brief);
   if (!ok) {
@@ -945,7 +992,7 @@ async function handleBestaetigen(request, env, url) {
   return new Response(htmlSeite('Gesendet', `
     <p class="mono">Erledigt</p>
     <h1>Bestellbestätigung ist raus.</h1>
-    <p>An ${htmlEsc(daten.email)}, Kopie an ${htmlEsc(EMPFAENGER)}. PDF liegt bei, soweit der Abruf von kanid.de geklappt hat.</p>
+    <p>An ${htmlEsc(daten.email)}, Kopie an ${htmlEsc(EMPFAENGER)}. Widerrufsformular und EU-Gewährleistungsmitteilung liegen als PDF bei, soweit der Abruf von kanid.de geklappt hat.</p>
     <p><a href="/versand?t=${htmlEsc(String(token))}">Weiter zum DHL-Versand</a></p>
   `), {
     headers: { 'Content-Type': 'text/html; charset=UTF-8', 'X-Robots-Tag': 'noindex' },
@@ -1336,7 +1383,7 @@ async function handlePaypal(request, env) {
     return new Response('MAIL_FAIL', { status: 500 });
   }
 
-  const anhang = await pdfAnhang();
+  const anhaenge = await bestellAnhaenge();
   const brief = {
     from: 'KANID Factory <info@kanid.de>',
     to: [email],
@@ -1344,7 +1391,7 @@ async function handlePaypal(request, env) {
     text: bestellBestaetigungText(daten),
     html: bestellBestaetigungHtml(daten),
   };
-  if (anhang) brief.attachments = [anhang];
+  if (anhaenge.length) brief.attachments = anhaenge;
 
   const kundeOk = await sende(env, brief);
   if (!kundeOk) {
@@ -1471,7 +1518,6 @@ function widerrufText(d, fuerKunde) {
     `„${WIDERRUF_ERKLAERUNG}“`,
     ...inhalt,
     '',
-    `IP: ${d.ip || 'unbekannt'}${d.land ? ` (${d.land})` : ''}`,
     `Bot-Check: ${d.turnstile}`,
     `Herkunft: ${d.herkunft}`,
     `Eingangsbestätigung an Kunde: ${d.kundeOk === undefined ? 'wird automatisch versendet' : (d.kundeOk ? 'versendet' : 'FEHLGESCHLAGEN — bitte manuell bestätigen')}`,
@@ -1575,7 +1621,6 @@ async function handleWiderruf(request, env) {
     name, email, vertrag, vertragLabel, kennung, datum, umfang, anschrift, nachricht,
     umfangText: umfang === 'teil' ? `Teil: ${umfangTeil}` : 'ganzer Vertrag',
     nachrichtKunde: linkFrei(nachricht),
-    ip, land: request.cf?.country || '',
     turnstile: turnstile.ok ? 'Turnstile ok' : `Turnstile ${turnstile.grund} (nicht erzwungen)`,
     herkunft: site,
   };
@@ -1611,7 +1656,10 @@ async function handleWiderruf(request, env) {
       text: widerrufText({ ...d, kundeOk: false }, false),
     }, trockenlauf);
   }
-  console.log(JSON.stringify({ event: 'widerruf_eingang', id: d.id, vertrag, umfang, kundeOk, turnstile: turnstile.grund, ip: ipKurz(ip) }));
+  // Datenminimierung (Datenschutzerklaerung 3.2c, Stand 10/2026): Die IP dient
+  // nur der Missbrauchsabwehr (Rate-Limit oben) und wird NICHT mit der
+  // Erklaerung gespeichert — weder in der Mail noch in diesem Log-Eintrag.
+  console.log(JSON.stringify({ event: 'widerruf_eingang', id: d.id, vertrag, umfang, kundeOk, turnstile: turnstile.grund }));
 
   const weiter = `${site}/widerruf/online/eingegangen/?id=${encodeURIComponent(d.id)}&t=${encodeURIComponent(d.eingangUtc)}${kundeOk ? '' : '&b=0'}`;
   const daten = {
