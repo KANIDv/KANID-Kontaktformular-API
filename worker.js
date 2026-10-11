@@ -6,10 +6,11 @@
 // v12 (2026-10, Branch widerruf-online-2026-10):
 //   - POST /widerruf: elektronische Widerrufsfunktion nach Paragraph 356a BGB
 //     (Eingangsbestaetigung an den Verbraucher mit Inhalt, Datum und Uhrzeit,
-//     Meldung an info@kanid.de).
-//   - Kontaktformular: Feld "vorzeitig" (ausdrueckliches Verlangen des
-//     vorzeitigen Leistungsbeginns, Paragraph 356 Abs. 5 / 357a Abs. 2 BGB)
-//     wird dokumentiert.
+//     Kopie an info@kanid.de). Texte aus kanid-dokumente
+//     agb-2026-10/Widerrufsbutton_Texte.md.
+//   - Bestellbestaetigung: Belehrungssatz zur Online-Widerrufsfunktion.
+//   - Kontaktformular: unveraendert (die Zustimmung zum vorzeitigen
+//     Leistungsbeginn gehoert zum Vertragsschluss, nicht zur Anfrage).
 //   - Staging: Variable STAGING = "1" (nur am Skript kanid-kontakt-staging).
 //     Dann gehen ALLE Mails ausschliesslich an info@kanid.de mit "[TEST]" im
 //     Betreff, Turnstile wird nur protokolliert, und ohne RESEND_API_KEY
@@ -265,11 +266,7 @@ function feldZelle(label, wert, breite) {
 
 // Neutral: uebernimmt bewusst KEINE Formulareingaben (Name, Firma, Nachricht),
 // damit das Formular nicht als Spam-Relay an fremde Adressen missbraucht wird.
-// Fester Satz (keine Formulareingabe) fuer die Eingangsbestaetigung, wenn die
-// Checkbox angekreuzt war. ENTWURF — Wortlaut vor Go-live pruefen lassen.
-const VORZEITIG_BESTAETIGUNG = 'Sie haben mit Ihrer Anfrage ausdrücklich verlangt, dass wir mit der Erbringung der Dienstleistung vor Ablauf der Widerrufsfrist beginnen, und bestätigt, dass Ihnen die Folgen bekannt sind (Wertersatz bei Widerruf, Erlöschen des Widerrufsrechts bei vollständiger Vertragserfüllung). Das gilt erst für einen Vertrag, den wir mit Ihnen schließen.';
-
-function bestaetigungHtml(vorzeitig = false) {
+function bestaetigungHtml() {
   const heute = new Date();
   const stand = heute.toISOString().slice(0, 7);
   const datum = heute.toISOString().slice(0, 10);
@@ -325,7 +322,6 @@ function bestaetigungHtml(vorzeitig = false) {
           <tr>
             <td style="padding:0 24px 28px;font-family:Arial,Helvetica,sans-serif;font-size:16px;line-height:1.55;color:#21262a;">
               Wir antworten werktags innerhalb weniger Stunden.<br><br>
-              ${vorzeitig ? `${htmlEsc(VORZEITIG_BESTAETIGUNG)}<br><br>` : ''}
               Mit freundlichen Grüßen<br>
               <strong style="color:#0e2733;">Konstantin Vinogradov</strong>
             </td>
@@ -1368,10 +1364,13 @@ async function handlePaypal(request, env) {
 // Spamschutz bewusst milder als beim Kontaktformular: Ein verworfener echter
 // Widerruf waere ein Rechtsproblem. Herkunft und Honeypot wie gehabt, eigenes
 // Ratenlimit, Turnstile wird nur protokolliert, kein Inhaltsfilter.
+// Texte 1:1 aus kanid-dokumente/ausgabe/agb-2026-10/Widerrufsbutton_Texte.md
+// (Abschnitte 2, 4 und 5), Stand 10/2026.
 const WIDERRUF_VERTRAEGE = {
-  waren: 'Warenkauf (KANID Factory)',
-  dienstleistung: 'Dienstleistung (Produktentwicklung)',
+  waren: 'Bestellung im Factory-Shop',
+  dienstleistung: 'Produktentwicklung (Phase 1, Phase 2 oder Zusatzleistung)',
 };
+const WIDERRUF_ERKLAERUNG = 'Hiermit widerrufe ich den oben bezeichneten Vertrag bzw. den oben bezeichneten Teil des Vertrags.';
 const WIDERRUF_RATE_MAX = 5;
 const widerrufRate = new Map();
 
@@ -1389,16 +1388,20 @@ function widerrufRateUeberschritten(ip) {
   return false;
 }
 
+// Eingangszeit serverseitig in Europe/Berlin; dieselben Werte gehen in die
+// E-Mail und (ueber die JSON-Antwort) auf die Bestaetigungsseite.
 function zeitBerlin(datum) {
-  const teile = new Intl.DateTimeFormat('de-DE', {
+  const teile = Object.fromEntries(new Intl.DateTimeFormat('de-DE', {
     timeZone: 'Europe/Berlin',
     day: '2-digit', month: '2-digit', year: 'numeric',
     hour: '2-digit', minute: '2-digit', second: '2-digit',
     timeZoneName: 'short',
-  }).format(datum);
-  // "11.10.2026, 10:55:01 MESZ" -> "11.10.2026 um 10:55:01 Uhr (MESZ)"
-  const m = teile.match(/^(.+?),\s*(\d{2}:\d{2}:\d{2})\s*(.*)$/);
-  return m ? `${m[1]} um ${m[2]} Uhr${m[3] ? ` (${m[3]})` : ''}` : teile;
+  }).formatToParts(datum).map((p) => [p.type, p.value]));
+  const tag = `${teile.day}.${teile.month}.${teile.year}`;
+  const uhrzeit = `${teile.hour}:${teile.minute}`;
+  const zone = teile.timeZoneName || '';
+  return { tag, uhrzeit, sekunden: `${uhrzeit}:${teile.second}`, zone,
+    text: `${tag} um ${uhrzeit} Uhr${zone ? ` (${zone})` : ''}` };
 }
 
 function widerrufKennung(datum) {
@@ -1407,58 +1410,85 @@ function widerrufKennung(datum) {
   return `WR-${tag}-${zufall}`;
 }
 
-function widerrufInhalt(d, mitNachricht) {
+function widerrufVertragZeile(d) {
+  return [d.vertragLabel, d.kennung, d.datum ? `bestellt bzw. beauftragt am ${d.datum}` : '']
+    .filter(Boolean).join(', ');
+}
+
+// Inhalt der Erklaerung (§ 356a Abs. 2/4), Reihenfolge wie im Mustertext.
+function widerrufInhalt(d, fuerKunde) {
+  const nachricht = fuerKunde ? d.nachrichtKunde : d.nachricht;
   return [
-    ['Erklärung', `Hiermit widerrufe ich den von mir abgeschlossenen Vertrag – ${d.vertragLabel}.`],
-    ['Vertrag', d.vertragLabel],
-    ['Bestell-/Auftragsnummer', d.kennung || '—'],
-    ['Bestell-/Vertragsdatum', d.datum || '—'],
     ['Name', d.name],
-    ['E-Mail für die Eingangsbestätigung', d.email],
-    ['Nachricht', mitNachricht ? (d.nachricht || '—') : d.nachrichtKunde],
+    ['Vertrag', widerrufVertragZeile(d)],
+    ['Umfang', d.umfangText],
+    ['E-Mail-Adresse für diese Bestätigung', d.email],
+    ...(d.anschrift ? [['Anschrift', d.anschrift]] : []),
+    ...(nachricht ? [['Nachricht', nachricht]] : []),
   ];
 }
 
+function widerrufBetreff(d) {
+  return `Eingangsbestätigung Ihres Widerrufs – ${d.kennung || `Vertrag vom ${d.datum}`}`;
+}
+
+const WIDERRUF_SIGNATUR = [
+  'Mit freundlichen Grüßen',
+  'KANID UG (haftungsbeschränkt)',
+  'Heinrich-Hertz-Str. 11 · 70794 Filderstadt',
+  'info@kanid.de · +49 1520 7921611',
+];
+
 function widerrufText(d, fuerKunde) {
-  const zeilen = widerrufInhalt(d, !fuerKunde);
+  const inhalt = widerrufInhalt(d, fuerKunde).map(([k, v]) => `${k}: ${v}`);
+  if (fuerKunde) {
+    return [
+      `Guten Tag ${d.name},`,
+      '',
+      'wir bestätigen den Eingang Ihres Widerrufs.',
+      '',
+      `Eingegangen am: ${d.zeit.tag} um ${d.zeit.uhrzeit} Uhr (${d.zeit.zone})`,
+      'Über: Online-Widerrufsfunktion auf kanid.de',
+      '',
+      'Inhalt Ihrer Widerrufserklärung:',
+      `„${WIDERRUF_ERKLAERUNG}“`,
+      ...inhalt,
+      '',
+      'Die Folgen des Widerrufs richten sich nach unserer Widerrufsbelehrung: https://kanid.de/widerruf/',
+      '',
+      'Bei einer Bestellung im Factory-Shop senden Sie die Ware bitte innerhalb von vierzehn Tagen ab heute an uns zurück:',
+      'KANID UG (haftungsbeschränkt), Heinrich-Hertz-Str. 11, 70794 Filderstadt',
+      '',
+      ...WIDERRUF_SIGNATUR,
+    ].join('\n');
+  }
   return [
-    fuerKunde ? 'Guten Tag,' : 'Widerruf über die Online-Widerrufsfunktion auf kanid.de (§ 356a BGB)',
+    'Widerruf über die Online-Widerrufsfunktion auf kanid.de (§ 356a BGB)',
     '',
-    fuerKunde
-      ? 'hiermit bestätigen wir den Eingang Ihrer Widerrufserklärung, die Sie über die Widerrufsfunktion auf unserer Website abgegeben haben.'
-      : 'Eingangsbestätigung an den Verbraucher wurde automatisch versendet (siehe unten).',
-    '',
-    `Eingegangen am: ${d.eingangText}`,
+    `Eingegangen am: ${d.zeit.tag} um ${d.zeit.sekunden} Uhr (${d.zeit.zone})`,
     `Eingang (UTC): ${d.eingangUtc}`,
     `Vorgangsnummer: ${d.id}`,
     '',
-    fuerKunde ? 'Inhalt Ihrer Widerrufserklärung:' : 'Inhalt der Widerrufserklärung:',
-    ...zeilen.map(([k, v]) => `${k}: ${v}`),
+    'Inhalt der Widerrufserklärung:',
+    `„${WIDERRUF_ERKLAERUNG}“`,
+    ...inhalt,
     '',
-    ...(fuerKunde ? [
-      'Bitte bewahren Sie diese E-Mail auf. Wir melden uns zur weiteren Abwicklung (Rückzahlung bzw. Rücksendung) bei Ihnen.',
-      '',
-      'KANID UG (haftungsbeschränkt)',
-      'Heinrich-Hertz-Str. 11',
-      '70794 Filderstadt',
-      'info@kanid.de · +49 1520 7921611',
-    ] : [
-      `IP: ${d.ip || 'unbekannt'}${d.land ? ` (${d.land})` : ''}`,
-      `Bot-Check: ${d.turnstile}`,
-      `Herkunft: ${d.herkunft}`,
-      `Eingangsbestätigung an Kunde: ${d.kundeOk === undefined ? 'wird versendet' : (d.kundeOk ? 'versendet' : 'FEHLGESCHLAGEN — bitte manuell bestätigen')}`,
-    ]),
+    `IP: ${d.ip || 'unbekannt'}${d.land ? ` (${d.land})` : ''}`,
+    `Bot-Check: ${d.turnstile}`,
+    `Herkunft: ${d.herkunft}`,
+    `Eingangsbestätigung an Kunde: ${d.kundeOk === undefined ? 'wird automatisch versendet' : (d.kundeOk ? 'versendet' : 'FEHLGESCHLAGEN — bitte manuell bestätigen')}`,
   ].join('\n');
 }
 
 function widerrufHtml(d) {
-  const zeilen = widerrufInhalt(d, false).map(([k, v]) => `<tr>
+  const p = (inhalt, extra = '') => `<tr><td style="padding:0 24px 16px;font-family:Arial,Helvetica,sans-serif;font-size:16px;line-height:1.55;color:#21262a;${extra}">${inhalt}</td></tr>`;
+  const zeilen = widerrufInhalt(d, true).map(([k, v]) => `<tr>
       <td style="padding:8px 12px;border:1px solid #0e2733;font-family:Consolas,'Courier New',monospace;font-size:11px;letter-spacing:0.08em;text-transform:uppercase;color:#1b6ba4;vertical-align:top;width:38%;">${htmlEsc(k)}</td>
       <td style="padding:8px 12px;border:1px solid #0e2733;font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.45;color:#0e2733;vertical-align:top;">${htmlZeilen(v)}</td>
     </tr>`).join('');
   return `<!DOCTYPE html>
 <html lang="de">
-<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Eingangsbestätigung Ihres Widerrufs</title></head>
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${htmlEsc(widerrufBetreff(d))}</title></head>
 <body style="margin:0;padding:0;background:#e9ecee;">
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0" bgcolor="#e9ecee" style="background:#e9ecee;">
     <tr><td align="center" style="padding:32px 12px;">
@@ -1466,24 +1496,19 @@ function widerrufHtml(d) {
         <tr><td style="padding:22px 24px 18px;border-bottom:1px solid #0e2733;">
           <table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>
             <td width="220" style="vertical-align:middle;"><img src="https://kanid.de/assets/img/LOGO.png" width="176" height="48" alt="KANID" style="display:block;width:176px;height:auto;border:0;"></td>
-            <td align="right" style="vertical-align:middle;font-family:Consolas,'Courier New',monospace;font-size:11px;letter-spacing:0.1em;text-transform:uppercase;color:#1b6ba4;line-height:1.55;">Eingangsbestätigung<br>${htmlEsc(d.id)}</td>
+            <td align="right" style="vertical-align:middle;font-family:Consolas,'Courier New',monospace;font-size:11px;letter-spacing:0.1em;text-transform:uppercase;color:#1b6ba4;line-height:1.55;">Eingangsbestätigung<br>Widerruf</td>
           </tr></table>
         </td></tr>
-        <tr><td style="padding:28px 24px 8px;font-family:Consolas,'Courier New',monospace;font-size:11px;letter-spacing:0.14em;text-transform:uppercase;color:#1b6ba4;">Widerruf eingegangen</td></tr>
-        <tr><td style="padding:0 24px 16px;font-family:Arial,Helvetica,sans-serif;font-size:24px;line-height:1.2;font-weight:700;color:#0e2733;">Wir haben Ihren Widerruf erhalten.</td></tr>
-        <tr><td style="padding:0 24px 18px;font-family:Arial,Helvetica,sans-serif;font-size:16px;line-height:1.55;color:#21262a;">
-          Guten Tag,<br><br>
-          hiermit bestätigen wir den Eingang Ihrer Widerrufserklärung, die Sie über die Widerrufsfunktion auf unserer Website abgegeben haben.<br><br>
-          <strong style="color:#0e2733;">Eingegangen am ${htmlEsc(d.eingangText)}</strong>
-        </td></tr>
-        <tr><td style="padding:0 24px 22px;">
+        <tr><td style="height:24px;"></td></tr>
+        ${p(`Guten Tag ${htmlEsc(d.name)},<br><br>wir bestätigen den Eingang Ihres Widerrufs.`)}
+        ${p(`<strong style="color:#0e2733;">Eingegangen am: ${htmlEsc(d.zeit.tag)} um ${htmlEsc(d.zeit.uhrzeit)} Uhr (${htmlEsc(d.zeit.zone)})</strong><br>Über: Online-Widerrufsfunktion auf kanid.de`)}
+        ${p(`Inhalt Ihrer Widerrufserklärung:<br><strong style="color:#0e2733;">„${htmlEsc(WIDERRUF_ERKLAERUNG)}“</strong>`, 'padding-bottom:10px;')}
+        <tr><td style="padding:0 24px 20px;">
           <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">${zeilen}</table>
         </td></tr>
-        <tr><td style="padding:0 24px 28px;font-family:Arial,Helvetica,sans-serif;font-size:16px;line-height:1.55;color:#21262a;">
-          Bitte bewahren Sie diese E-Mail auf. Wir melden uns zur weiteren Abwicklung (Rückzahlung bzw. Rücksendung) bei Ihnen.<br><br>
-          Mit freundlichen Grüßen<br><strong style="color:#0e2733;">KANID UG (haftungsbeschränkt)</strong><br>
-          Heinrich-Hertz-Str. 11 · 70794 Filderstadt<br>info@kanid.de · +49 1520 7921611
-        </td></tr>
+        ${p('Die Folgen des Widerrufs richten sich nach unserer Widerrufsbelehrung: <a href="https://kanid.de/widerruf/" style="color:#1b6ba4;">https://kanid.de/widerruf/</a>')}
+        ${p('Bei einer Bestellung im Factory-Shop senden Sie die Ware bitte innerhalb von vierzehn Tagen ab heute an uns zurück:<br>KANID UG (haftungsbeschränkt), Heinrich-Hertz-Str. 11, 70794 Filderstadt')}
+        ${p(`Mit freundlichen Grüßen<br><strong style="color:#0e2733;">KANID UG (haftungsbeschränkt)</strong><br>Heinrich-Hertz-Str. 11 · 70794 Filderstadt<br>info@kanid.de · +49 1520 7921611`, 'padding-bottom:28px;')}
       </table>
     </td></tr>
   </table>
@@ -1510,24 +1535,29 @@ async function handleWiderruf(request, env) {
     return antwort(request, { ok: true, mail: true }, 200);
   }
 
+  const lang = (k, max) => (typeof form.get(k) === 'string' ? form.get(k).replace(/\0/g, '').trim().slice(0, max) : '');
   const name = feld(form.get('name'), 120);
   const email = feld(form.get('email'), 180);
   const vertrag = feld(form.get('vertrag'), 20);
   const kennung = feld(form.get('kennung'), 120);
   const datum = feld(form.get('datum'), 40);
-  const nachricht = typeof form.get('nachricht') === 'string'
-    ? form.get('nachricht').replace(/\0/g, '').trim().slice(0, 2000)
-    : '';
+  const umfang = feld(form.get('umfang'), 10) === 'teil' ? 'teil' : 'ganz';
+  const umfangTeil = lang('umfang_teil', 1000);
+  const anschrift = lang('anschrift', 400);
+  const nachricht = lang('nachricht', 2000);
   const vertragLabel = WIDERRUF_VERTRAEGE[vertrag];
 
   if (!name || !email || !vertragLabel) {
-    return antwort(request, { ok: false, error: 'validation', meldung: 'Bitte geben Sie Ihren Namen, Ihre E-Mail-Adresse und die Art des Vertrags an.' }, 422);
+    return antwort(request, { ok: false, error: 'validation', meldung: 'Bitte geben Sie Ihren Namen, Ihre E-Mail-Adresse und den Vertrag an, den Sie widerrufen möchten.' }, 422);
   }
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-    return antwort(request, { ok: false, error: 'validation', meldung: 'Bitte geben Sie eine gültige E-Mail-Adresse ein — an sie geht die Eingangsbestätigung.' }, 422);
+    return antwort(request, { ok: false, error: 'validation', meldung: 'Bitte geben Sie eine gültige E-Mail-Adresse ein — an sie geht Ihre Eingangsbestätigung.' }, 422);
   }
   if (!kennung && !datum) {
-    return antwort(request, { ok: false, error: 'validation', meldung: 'Bitte geben Sie die Bestell- bzw. Auftragsnummer oder das Bestell- bzw. Vertragsdatum an, damit wir den Vertrag zuordnen können.' }, 422);
+    return antwort(request, { ok: false, error: 'validation', meldung: 'Bitte geben Sie die Bestell- oder Angebotsnummer oder das Datum der Bestellung bzw. des Auftrags an.' }, 422);
+  }
+  if (umfang === 'teil' && !umfangTeil) {
+    return antwort(request, { ok: false, error: 'validation', meldung: 'Bitte nennen Sie die Artikel bzw. Leistungen, die Sie widerrufen möchten, oder wählen Sie „Ganzer Vertrag“.' }, 422);
   }
 
   const turnstile = await pruefeTurnstile(feld(form.get('cf-turnstile-response'), 2048), ip, env);
@@ -1537,20 +1567,23 @@ async function handleWiderruf(request, env) {
   }
 
   const eingang = new Date();
+  const linkFrei = (wert) => (!wert ? '' : (LINK_MUSTER.test(wert)
+    ? '[Enthält Links und wird hier aus Sicherheitsgründen nicht wiederholt. Liegt uns vollständig vor.]'
+    : wert));
   const d = {
     id: widerrufKennung(eingang),
     eingangUtc: eingang.toISOString(),
-    eingangText: zeitBerlin(eingang),
-    name, email, vertrag, vertragLabel, kennung, datum, nachricht,
-    nachrichtKunde: !nachricht ? '—' : (LINK_MUSTER.test(nachricht)
-      ? '[Ihre Nachricht enthält Links und wird hier aus Sicherheitsgründen nicht wiederholt. Sie liegt uns vollständig vor.]'
-      : nachricht),
+    zeit: zeitBerlin(eingang),
+    name, email, vertrag, vertragLabel, kennung, datum, umfang, anschrift, nachricht,
+    umfangText: umfang === 'teil' ? `Teil: ${umfangTeil}` : 'ganzer Vertrag',
+    nachrichtKunde: linkFrei(nachricht),
     ip, land: request.cf?.country || '',
     turnstile: turnstile.ok ? 'Turnstile ok' : `Turnstile ${turnstile.grund} (nicht erzwungen)`,
     herkunft: site,
   };
   const trockenlauf = istStaging(env) ? [] : null;
 
+  // Kopie an KANID zur internen Bearbeitung
   const internOk = await sende(env, {
     from: 'KANID Widerruf <info@kanid.de>',
     to: [EMPFAENGER],
@@ -1563,17 +1596,16 @@ async function handleWiderruf(request, env) {
     return antwort(request, { ok: false, error: 'mail', meldung: 'Ihr Widerruf konnte gerade nicht übermittelt werden. Bitte senden Sie ihn per E-Mail an info@kanid.de oder versuchen Sie es erneut.' }, 500);
   }
 
+  // Eingangsbestaetigung (§ 356a Abs. 4), automatisch und sofort
   const kundeOk = await sende(env, {
     from: 'KANID <info@kanid.de>',
     to: [email],
     reply_to: EMPFAENGER,
-    subject: `Eingangsbestätigung Ihres Widerrufs — ${d.id}`,
+    subject: widerrufBetreff(d),
     text: widerrufText(d, true),
     html: widerrufHtml(d),
   }, trockenlauf);
   if (!kundeOk) {
-    // Interne Nachricht ist raus, der Widerruf ist zugegangen. Fehlende
-    // Bestaetigung wird KANID gesondert gemeldet, damit sie manuell nachgeht.
     await sende(env, {
       from: 'KANID Widerruf <info@kanid.de>',
       to: [EMPFAENGER],
@@ -1581,10 +1613,16 @@ async function handleWiderruf(request, env) {
       text: widerrufText({ ...d, kundeOk: false }, false),
     }, trockenlauf);
   }
-  console.log(JSON.stringify({ event: 'widerruf_eingang', id: d.id, vertrag, kundeOk, turnstile: turnstile.grund, ip: ipKurz(ip) }));
+  console.log(JSON.stringify({ event: 'widerruf_eingang', id: d.id, vertrag, umfang, kundeOk, turnstile: turnstile.grund, ip: ipKurz(ip) }));
 
   const weiter = `${site}/widerruf/online/eingegangen/?id=${encodeURIComponent(d.id)}&t=${encodeURIComponent(d.eingangUtc)}${kundeOk ? '' : '&b=0'}`;
-  const daten = { ok: true, mail: true, id: d.id, eingang: d.eingangUtc, eingang_text: d.eingangText, bestaetigung: kundeOk, weiter };
+  const daten = {
+    ok: true, mail: true, id: d.id, eingang: d.eingangUtc, eingang_text: d.zeit.text,
+    eingang_datum: d.zeit.tag, eingang_uhrzeit: d.zeit.uhrzeit,
+    bestaetigung: kundeOk, weiter,
+    // fuer die Bestaetigungsseite ("Ihre Angaben"); bleibt im sessionStorage des Browsers
+    angaben: { name, email, vertrag: widerrufVertragZeile(d), umfang: d.umfangText },
+  };
   if (trockenlauf) daten.staging_trockenlauf = trockenlauf;
   return antwort(request, daten, 200);
 }
@@ -1672,12 +1710,6 @@ export default {
       ? form.get('message').replace(/\0/g, '').trim().slice(0, 5000)
       : '';
 
-    // Ausdrueckliches Verlangen des vorzeitigen Leistungsbeginns (Checkbox,
-    // optional, nicht vorausgewaehlt). Wortlaut-Fassung wird mitgeschickt,
-    // damit spaeter nachvollziehbar ist, welchem Text zugestimmt wurde.
-    const vorzeitig = feld(form.get('vorzeitig'), 10) === 'ja';
-    const vorzeitigFassung = feld(form.get('vorzeitig_fassung'), 60);
-    const vorzeitigText = feld(form.get('vorzeitig_text'), 600);
     const artEintrag = ARTEN[art];
     const quelle = QUELLEN.has(quelleRoh) ? quelleRoh : '';
 
@@ -1734,11 +1766,6 @@ export default {
       `Zeit:    ${new Date().toISOString()} UTC`,
       `Bot-Check: ${turnstile.ok ? 'Turnstile ok' : `Turnstile ${turnstile.grund}`}`,
       '',
-      `Vorzeitiger Leistungsbeginn verlangt (§ 356 Abs. 5 / § 357a Abs. 2 BGB): ${vorzeitig ? 'JA — Checkbox angekreuzt' : 'nein (Checkbox nicht angekreuzt)'}`,
-      vorzeitig ? `  Zeitpunkt: ${new Date().toISOString()} UTC` : null,
-      vorzeitig && vorzeitigFassung ? `  Wortlaut-Fassung: ${vorzeitigFassung}` : null,
-      vorzeitig && vorzeitigText ? `  Wortlaut: „${vorzeitigText}“` : null,
-      '',
       'Nachricht:',
       message,
     ].filter((zeile) => zeile !== null).join('\n');
@@ -1767,8 +1794,6 @@ export default {
       '',
       'Wir antworten werktags innerhalb weniger Stunden.',
       '',
-      vorzeitig ? VORZEITIG_BESTAETIGUNG : null,
-      vorzeitig ? '' : null,
       'Falls Sie uns nicht geschrieben haben, können Sie diese E-Mail ignorieren.',
       '',
       'KANID UG (haftungsbeschränkt)',
@@ -1782,7 +1807,7 @@ export default {
       to: [email],
       subject: 'Ihre Nachricht an KANID',
       text: bestaetigung,
-      html: bestaetigungHtml(vorzeitig),
+      html: bestaetigungHtml(),
     });
 
     return antwort(request, { ok: true, mail: true }, 200);
