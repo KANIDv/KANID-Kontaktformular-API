@@ -1685,7 +1685,7 @@ export default {
     const pfad = url.pathname.replace(/\/$/, '') || '/';
 
     if (request.method === 'GET' && (pfad === '/' || pfad === '/ping' || pfad === '/ping.php')) {
-      return json({ ok: true, runtime: 'cloudflare-worker', version: 12, time: new Date().toISOString() }, 200, origin);
+      return json({ ok: true, runtime: 'cloudflare-worker', version: 13, time: new Date().toISOString() }, 200, origin);
     }
 
     if (pfad === '/bestaetigen') {
