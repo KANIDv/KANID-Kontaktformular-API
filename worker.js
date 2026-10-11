@@ -83,6 +83,99 @@ function feld(value, max) {
   return value.replace(/[\r\n\0]/g, ' ').trim().slice(0, max);
 }
 
+// ---- Spamschutz (v10) ----------------------------------------------------
+const MIN_SEKUNDEN = 4;
+const RATE_MAX = 5;            // Nachrichten
+const RATE_FENSTER_MS = 10 * 60 * 1000; // pro 10 Minuten und IP
+const rateSpeicher = new Map(); // best effort: gilt nur je Worker-Isolate
+
+const LINK_MUSTER = /(https?:\/\/|www\.|telegra\.ph|shorto\.link|bit\.ly|tinyurl\.|t\.me\/|myip\.|\b[a-z0-9-]{2,}\.(?:ph|link|ly|xyz|top|click|icu|ru|su)\b)/i;
+const LOCK_MUSTER = /(promo ?code|jackpot|winner|win the|giveaway|bitcoin|crypto|casino|lottery|backlinks?|seo services?|rolls-royce|lamborghini|playstation|\$\s?\d)/i;
+const DEUTSCH_MUSTER = /[äöüßÄÖÜ]|\b(und|der|die|das|ich|wir|sie|nicht|mit|für|fuer|bitte|ist|ein|eine|einen|zu|guten|hallo|danke|anfrage|grüße|gruesse|vielen|unser|unsere|wäre|haben|können)\b/i;
+
+function clientIp(request) {
+  return request.headers.get('CF-Connecting-IP') || '';
+}
+
+function ipKurz(ip) {
+  if (!ip) return '';
+  if (ip.includes(':')) return ip.split(':').slice(0, 3).join(':') + '::';
+  return ip.split('.').slice(0, 3).join('.') + '.x';
+}
+
+function rateLimitUeberschritten(ip) {
+  if (!ip) return false;
+  const jetzt = Date.now();
+  const liste = (rateSpeicher.get(ip) || []).filter((t) => t > jetzt - RATE_FENSTER_MS);
+  if (liste.length >= RATE_MAX) {
+    rateSpeicher.set(ip, liste);
+    return true;
+  }
+  liste.push(jetzt);
+  rateSpeicher.set(ip, liste);
+  if (rateSpeicher.size > 5000) rateSpeicher.clear();
+  return false;
+}
+
+function herkunftFremd(request) {
+  const origin = request.headers.get('Origin') || '';
+  if (origin) return !originErlaubt(origin);
+  const referer = request.headers.get('Referer') || '';
+  if (!referer) return false; // fehlend vorerst tolerieren
+  try {
+    return !originErlaubt(new URL(referer).origin);
+  } catch {
+    return true;
+  }
+}
+
+function spamGruende({ name, firma, message }) {
+  const gruende = [];
+  if (LINK_MUSTER.test(message) || LINK_MUSTER.test(name) || LINK_MUSTER.test(firma)) gruende.push('link');
+  if (/williamdon/i.test(name)) gruende.push('name');
+  if (firma.trim().toLowerCase() === 'google') gruende.push('firma');
+  if (LOCK_MUSTER.test(message) && !DEUTSCH_MUSTER.test(message)) gruende.push('lockphrase-en');
+  return gruende;
+}
+
+// ---- Turnstile (v11) ------------------------------------------------------
+// false = nur protokollieren, true = fehlender/ungueltiger Token -> still verwerfen
+const TURNSTILE_ERZWINGEN = true;
+const TURNSTILE_HOSTS = ['kanid.de', 'www.kanid.de'];
+
+async function pruefeTurnstile(token, ip, env) {
+  if (!env.TURNSTILE_SECRET) return { ok: false, grund: 'kein-secret' };
+  if (!token) return { ok: false, grund: 'fehlt' };
+  try {
+    const daten = new FormData();
+    daten.append('secret', env.TURNSTILE_SECRET);
+    daten.append('response', token);
+    if (ip) daten.append('remoteip', ip);
+    const antwortTs = await fetch('https://challenges.cloudflare.com/turnstile/v0/siteverify', { method: 'POST', body: daten });
+    const ergebnis = await antwortTs.json();
+    if (!ergebnis.success) {
+      return { ok: false, grund: 'ungueltig', codes: ergebnis['error-codes'] || [] };
+    }
+    if (ergebnis.hostname && !TURNSTILE_HOSTS.includes(ergebnis.hostname)) {
+      return { ok: false, grund: 'hostname', hostname: ergebnis.hostname };
+    }
+    return { ok: true, grund: 'ok' };
+  } catch (fehler) {
+    return { ok: false, grund: 'fehler-siteverify' };
+  }
+}
+
+function verwerfen(request, grund, info = {}) {
+  console.log(JSON.stringify({
+    event: 'kontakt_verworfen',
+    grund,
+    ip: ipKurz(clientIp(request)),
+    land: request.cf?.country || '',
+    ...info,
+  }));
+  return antwort(request, { ok: true, mail: true }, 200);
+}
+
 async function sendeResend(apiKey, brief) {
   const antwort = await fetch('https://api.resend.com/emails', {
     method: 'POST',
@@ -114,12 +207,13 @@ function feldZelle(label, wert, breite) {
   </td>`;
 }
 
-function bestaetigungHtml({ name, firma, artLabel, kontext, message }) {
+// Neutral: uebernimmt bewusst KEINE Formulareingaben (Name, Firma, Nachricht),
+// damit das Formular nicht als Spam-Relay an fremde Adressen missbraucht wird.
+function bestaetigungHtml() {
   const heute = new Date();
   const stand = heute.toISOString().slice(0, 7);
   const datum = heute.toISOString().slice(0, 10);
   const nummer = `KANID-MAIL-${datum.replace(/-/g, '')}`;
-  const bezug = kontext ? htmlEsc(kontext) : '—';
 
   return `<!DOCTYPE html>
 <html lang="de">
@@ -162,30 +256,9 @@ function bestaetigungHtml({ name, firma, artLabel, kontext, message }) {
           </tr>
           <tr>
             <td style="padding:0 24px 22px;font-family:Arial,Helvetica,sans-serif;font-size:16px;line-height:1.55;color:#21262a;">
-              Guten Tag ${htmlEsc(name)},<br><br>
+              Guten Tag,<br><br>
               Ihre Nachricht ist bei uns eingegangen. Diese E-Mail bestätigt nur den Empfang.
               Sie ist keine Auftragsbestätigung und kein Angebot.
-            </td>
-          </tr>
-
-          <tr>
-            <td style="padding:0 24px 24px;">
-              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
-                <tr>
-                  ${feldZelle('Firma', htmlEsc(firma), '50%')}
-                  ${feldZelle('Ansprechpartner', htmlEsc(name), '50%')}
-                </tr>
-                <tr>
-                  ${feldZelle('Art der Anfrage', htmlEsc(artLabel), '50%')}
-                  ${feldZelle('Bezug', bezug, '50%')}
-                </tr>
-                <tr>
-                  <td colspan="2" width="100%" style="padding:12px;border:1px solid #0e2733;vertical-align:top;">
-                    <div style="margin:0 0 6px;font-family:Consolas,'Courier New',monospace;font-size:10px;letter-spacing:0.12em;text-transform:uppercase;color:#1b6ba4;">Mitteilung</div>
-                    <div style="margin:0;font-family:Arial,Helvetica,sans-serif;font-size:15px;line-height:1.5;color:#0e2733;">${htmlZeilen(message)}</div>
-                  </td>
-                </tr>
-              </table>
             </td>
           </tr>
 
@@ -1236,7 +1309,7 @@ export default {
     const pfad = url.pathname.replace(/\/$/, '') || '/';
 
     if (request.method === 'GET' && (pfad === '/' || pfad === '/ping' || pfad === '/ping.php')) {
-      return json({ ok: true, runtime: 'cloudflare-worker', version: 9, time: new Date().toISOString() }, 200, origin);
+      return json({ ok: true, runtime: 'cloudflare-worker', version: 11, time: new Date().toISOString() }, 200, origin);
     }
 
     if (pfad === '/bestaetigen') {
@@ -1266,17 +1339,30 @@ export default {
       return handleBestellung(request, env);
     }
 
+    if (herkunftFremd(request)) {
+      return verwerfen(request, 'herkunft');
+    }
+
+    const ip = clientIp(request);
+    if (rateLimitUeberschritten(ip)) {
+      console.log(JSON.stringify({ event: 'kontakt_ratelimit', ip: ipKurz(ip) }));
+      return antwort(request, { ok: false, error: 'rate', meldung: 'Zu viele Nachrichten. Bitte in ein paar Minuten erneut versuchen.' }, 429);
+    }
+
     const form = await request.formData();
     const honeypot = feld(form.get('bot-field'), 80) + feld(form.get('_gotcha'), 80);
     if (honeypot) {
-      return antwort(request, { ok: true, mail: false }, 200);
+      return verwerfen(request, 'honeypot');
     }
 
+    // Zeitfeld ist optional, solange die Website es nicht setzt.
     const gesetzt = feld(form.get('_gesetzt'), 20);
     if (/^\d+$/.test(gesetzt)) {
-      const alter = Math.floor(Date.now() / 1000) - Number(gesetzt);
-      if (alter >= 0 && alter < 2) {
-        return antwort(request, { ok: true, mail: false }, 200);
+      let wert = Number(gesetzt);
+      if (wert > 1e11) wert = Math.floor(wert / 1000); // Millisekunden toleriert
+      const alter = Math.floor(Date.now() / 1000) - wert;
+      if (alter >= 0 && alter < MIN_SEKUNDEN) {
+        return verwerfen(request, 'zu-schnell', { sekunden: alter });
       }
     }
 
@@ -1300,6 +1386,27 @@ export default {
       return antwort(request, { ok: false, error: 'validation', meldung: 'Bitte geben Sie eine gültige E-Mail-Adresse ein.' }, 422);
     }
 
+    const turnstile = await pruefeTurnstile(feld(form.get('cf-turnstile-response'), 2048), ip, env);
+    console.log(JSON.stringify({
+      event: 'kontakt_turnstile',
+      ok: turnstile.ok,
+      grund: turnstile.grund,
+      codes: turnstile.codes,
+      erzwingen: TURNSTILE_ERZWINGEN,
+      ip: ipKurz(ip),
+    }));
+    if (!turnstile.ok && TURNSTILE_ERZWINGEN && turnstile.grund !== 'fehler-siteverify') {
+      return verwerfen(request, `turnstile-${turnstile.grund}`);
+    }
+
+    const gruende = spamGruende({ name, firma, message });
+    if (gruende.length) {
+      return verwerfen(request, gruende.join(','), {
+        domain: (email.split('@')[1] || '').toLowerCase(),
+        laenge: message.length,
+      });
+    }
+
     if (!env.RESEND_API_KEY) {
       return antwort(request, {
         ok: false,
@@ -1321,6 +1428,9 @@ export default {
       `Art:     ${artEintrag.label}`,
       quelle ? `Quelle:  ${quelle}` : null,
       kontext ? `Kontext: ${kontext}` : null,
+      `IP:      ${ip || 'unbekannt'}${request.cf?.country ? ` (${request.cf.country})` : ''}`,
+      `Zeit:    ${new Date().toISOString()} UTC`,
+      `Bot-Check: ${turnstile.ok ? 'Turnstile ok' : `Turnstile ${turnstile.grund}`}`,
       '',
       'Nachricht:',
       message,
@@ -1343,18 +1453,14 @@ export default {
     }
 
     const bestaetigung = [
-      `Guten Tag ${name},`,
+      'Guten Tag,',
       '',
-      'wir haben Ihre Nachricht erhalten. Diese E-Mail bestätigt nur den Eingang — sie ist keine Auftragsbestätigung.',
-      '',
-      `Firma:     ${firma}`,
-      `Art:       ${artEintrag.label}`,
-      kontext ? `Bezug:     ${kontext}` : null,
-      '',
-      'Ihre Nachricht:',
-      message,
+      'vielen Dank für Ihre Nachricht an KANID. Sie ist bei uns eingegangen.',
+      'Diese E-Mail bestätigt nur den Eingang — sie ist keine Auftragsbestätigung und kein Angebot.',
       '',
       'Wir antworten werktags innerhalb weniger Stunden.',
+      '',
+      'Falls Sie uns nicht geschrieben haben, können Sie diese E-Mail ignorieren.',
       '',
       'KANID UG (haftungsbeschränkt)',
       'Heinrich-Hertz-Str. 11',
@@ -1367,13 +1473,7 @@ export default {
       to: [email],
       subject: 'Ihre Nachricht an KANID',
       text: bestaetigung,
-      html: bestaetigungHtml({
-        name,
-        firma,
-        artLabel: artEintrag.label,
-        kontext,
-        message,
-      }),
+      html: bestaetigungHtml(),
     });
 
     return antwort(request, { ok: true, mail: true }, 200);
