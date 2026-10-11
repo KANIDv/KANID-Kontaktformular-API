@@ -1,6 +1,20 @@
 name = "kanid-kontakt"
 main = "worker.js"
 compatibility_date = "2026-08-13"
+# Wie das Produktiv-Skript (Stand Version b5d9b523): nur workers.dev, keine
+# Preview-URLs, keine Vars/Routen; Secrets RESEND_API_KEY + TURNSTILE_SECRET
+# liegen im Dashboard und bleiben bei `wrangler deploy` erhalten.
+workers_dev = true
+preview_urls = false
+
+[observability]
+enabled = true
+head_sampling_rate = 1
+
+[observability.logs]
+enabled = true
+head_sampling_rate = 1
+invocation_logs = true
 
 # Staging/Preview (2026-10): eigenes Skript, NIE das Produktiv-Skript.
 #   wrangler deploy --env staging   ->  kanid-kontakt-staging.lucky-sea-ca19.workers.dev
