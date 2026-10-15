@@ -1752,6 +1752,19 @@ export default {
     const art = feld(form.get('art'), 40);
     const quelleRoh = feld(form.get('quelle'), 40);
     const kontext = feld(form.get('kontext'), 180);
+    const GEFUNDEN = {
+      google: 'Google-Suche', maps: 'Google Maps / Unternehmensprofil', ki: 'ChatGPT / KI-Assistent',
+      linkedin: 'LinkedIn', youtube: 'YouTube / Shorts', 'instagram-tiktok': 'Instagram / TikTok',
+      empfehlung: 'Empfehlung', veranstaltung: 'Veranstaltung / Netzwerk', factory: 'Über ein Factory-Produkt',
+      sonstiges: 'Sonstiges',
+    };
+    const gefunden = GEFUNDEN[feld(form.get('gefunden'), 40)] || '';
+    const utm = ['utm_source', 'utm_medium', 'utm_campaign', 'utm_content', 'utm_term']
+      .map((k) => [k.slice(4), feld(form.get(k), 80)])
+      .filter(([, v]) => v)
+      .map(([k, v]) => `${k}=${v}`)
+      .join(' · ');
+    const einstieg = feld(form.get('einstieg'), 120);
     const message = typeof form.get('message') === 'string'
       ? form.get('message').replace(/\0/g, '').trim().slice(0, 5000)
       : '';
@@ -1808,6 +1821,9 @@ export default {
       `Art:     ${artEintrag.label}`,
       quelle ? `Quelle:  ${quelle}` : null,
       kontext ? `Kontext: ${kontext}` : null,
+      `Gefunden: ${gefunden || 'keine Angabe'}`,
+      utm ? `UTM:     ${utm}` : null,
+      einstieg ? `Einstieg: ${einstieg}` : null,
       `IP:      ${ip || 'unbekannt'}${request.cf?.country ? ` (${request.cf.country})` : ''}`,
       `Zeit:    ${new Date().toISOString()} UTC`,
       `Bot-Check: ${turnstile.ok ? 'Turnstile ok' : `Turnstile ${turnstile.grund}`}`,
