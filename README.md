@@ -18,7 +18,10 @@ Die URL sieht so aus:
 
 `https://kanid-kontakt.<dein-subdomain>.workers.dev`
 
-Zuerst im Browser öffnen. Es muss JSON kommen: `"ok": true`, `"runtime": "cloudflare-worker"`, aktuell `"version": 9`.
+Zuerst im Browser öffnen. Es muss JSON kommen: `"ok": true`, `"runtime": "cloudflare-worker"`, aktuell `"version": 14`.
+
+Deploy aus diesem Repo: `npx wrangler deploy` (Produktion) bzw. `npx wrangler deploy --env staging`.
+Secrets (`RESEND_API_KEY`, `TURNSTILE_SECRET`) bleiben im Cloudflare-Dashboard und werden von `wrangler deploy` nicht überschrieben. Nichts davon gehört ins Git.
 
 Nach Vorkasse und PayPal hängt der Worker die ausgefüllte DHL-Easylog-Datei an die interne Mail
 (`{Bestellnummer}-dhl-easylog.csv`). Dieselbe Datei gibt es unter `/versand?t=…&download=1`.
@@ -49,6 +52,14 @@ In `KANID-Website-v4` / `config/formular.json`:
 ```
 
 Dann dort committen. Das Formular postet dorthin.
+
+Englisch (`/en/`, z. B. `/en/contact/`): verstecktes Feld `lang` mit dem Wert `en`.
+Das Feld braucht es, weil der Browser beim Aufruf des Workers den Pfad im Referer normalerweise nicht mitschickt.
+Ohne `lang` bleibt alles deutsch. Ein Referer- oder Origin-Pfad, der mit `/en/` beginnt, ist nur der Ersatz.
+Bestätigungsmail und `meldung` kommen dann auf Englisch. Die JSON-Antwort nennt `weiter`.
+Ohne `Accept: application/json` leitet der Browser auf `https://kanid.de/en/thank-you/` weiter.
+Ein mitgeschicktes `danke_url` gilt nur bei `https` auf `kanid.de` oder `www.kanid.de`.
+Die interne Mail an KANID bleibt deutsch und nennt die Sprache.
 
 ## Erlaubte Origins
 

@@ -5,6 +5,7 @@ require dirname(__DIR__) . '/src/bootstrap.php';
 
 $geheim = ladeGeheimnisse();
 $method = $_SERVER['REQUEST_METHOD'] ?? '';
+$lang = spracheBestimmen();
 
 if ($method === 'OPTIONS') {
     corsHeaderSetzen($config);
@@ -13,11 +14,11 @@ if ($method === 'OPTIONS') {
 }
 
 if ($method !== 'POST') {
-    antwort($config, 405, ['ok' => false, 'error' => 'method', 'meldung' => 'Nur POST ist erlaubt.']);
+    antwort($config, 405, ['ok' => false, 'error' => 'method', 'meldung' => kontaktText($lang, 'method')]);
 }
 
 if (!originErlaubt($config)) {
-    antwort($config, 403, ['ok' => false, 'error' => 'origin', 'meldung' => 'Ungültige Herkunft.']);
+    antwort($config, 403, ['ok' => false, 'error' => 'origin', 'meldung' => kontaktText($lang, 'origin')]);
 }
 
 $honeypot = feld('bot-field', 80) . feld('_gotcha', 80);
@@ -35,7 +36,7 @@ if ($gesetzt !== '' && ctype_digit($gesetzt)) {
 }
 
 if (rateLimitUeberschritten($config)) {
-    antwort($config, 429, ['ok' => false, 'error' => 'rate', 'meldung' => 'Zu viele Nachrichten. Bitte in ein paar Minuten erneut versuchen.']);
+    antwort($config, 429, ['ok' => false, 'error' => 'rate', 'meldung' => kontaktText($lang, 'rate')]);
 }
 
 $name = feld('name', 120);
@@ -44,11 +45,11 @@ $betreff = feld('subject', 180);
 $nachricht = nachrichtFeld(5000);
 
 if ($name === '' || $email === '' || $betreff === '' || $nachricht === '') {
-    antwort($config, 422, ['ok' => false, 'error' => 'validation', 'meldung' => 'Bitte füllen Sie alle Pflichtfelder aus.']);
+    antwort($config, 422, ['ok' => false, 'error' => 'validation', 'meldung' => kontaktText($lang, 'pflicht')]);
 }
 
 if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
-    antwort($config, 422, ['ok' => false, 'error' => 'validation', 'meldung' => 'Bitte geben Sie eine gültige E-Mail-Adresse ein.']);
+    antwort($config, 422, ['ok' => false, 'error' => 'validation', 'meldung' => kontaktText($lang, 'email')]);
 }
 
 $empfaenger = (string) $config['empfaenger'];
@@ -64,6 +65,7 @@ $koerper = implode("\n", [
     'Betreff: ' . $betreff,
     'Zeit:    ' . gmdate('Y-m-d H:i:s') . ' UTC',
     'IP:      ' . clientIp(),
+    'Sprache: ' . ($lang === 'en' ? 'Englisch' : 'Deutsch'),
     '',
     'Nachricht:',
     $nachricht,
@@ -85,25 +87,38 @@ if (!$gesendet) {
     antwort($config, 500, [
         'ok' => false,
         'error' => 'mail',
-        'meldung' => 'Die Nachricht konnte nicht versendet werden. Bitte schreiben Sie direkt an info@kanid.de.',
+        'meldung' => kontaktText($lang, 'mail'),
         'mail' => false,
         'php' => PHP_VERSION,
     ]);
 }
 
 if (!empty($config['bestaetigung'])) {
-    $danke = implode("\n", [
-        'Guten Tag ' . $name . ',',
-        '',
-        'wir haben Ihre Nachricht erhalten und melden uns so schnell wie möglich.',
-        '',
-        'Betreff: ' . $betreff,
-        '',
-        'KANID UG (haftungsbeschränkt)',
-        'Heinrich-Hertz-Str. 11',
-        '70794 Filderstadt',
-        'info@kanid.de · +49 1520 7921611',
-    ]);
+    $danke = $lang === 'en'
+        ? implode("\n", [
+            'Hello ' . $name . ',',
+            '',
+            'we have received your message and will get back to you as soon as possible.',
+            '',
+            'Subject: ' . $betreff,
+            '',
+            'KANID UG (haftungsbeschränkt)',
+            'Heinrich-Hertz-Str. 11',
+            '70794 Filderstadt',
+            'info@kanid.de · +49 1520 7921611',
+        ])
+        : implode("\n", [
+            'Guten Tag ' . $name . ',',
+            '',
+            'wir haben Ihre Nachricht erhalten und melden uns so schnell wie möglich.',
+            '',
+            'Betreff: ' . $betreff,
+            '',
+            'KANID UG (haftungsbeschränkt)',
+            'Heinrich-Hertz-Str. 11',
+            '70794 Filderstadt',
+            'info@kanid.de · +49 1520 7921611',
+        ]);
     $dankeHeaders = [
         'MIME-Version: 1.0',
         'Content-Type: text/plain; charset=UTF-8',
@@ -111,7 +126,7 @@ if (!empty($config['bestaetigung'])) {
         'From: ' . kopfzeile('KANID') . ' <' . $absenderMail . '>',
         'X-Mailer: KANID-Kontakt',
     ];
-    sendeMail($email, 'Ihre Anfrage an KANID', $danke, $dankeHeaders, $absenderMail, $geheim);
+    sendeMail($email, kontaktText($lang, 'betreff'), $danke, $dankeHeaders, $absenderMail, $geheim);
 }
 
 antwort($config, 200, ['ok' => true, 'mail' => true]);

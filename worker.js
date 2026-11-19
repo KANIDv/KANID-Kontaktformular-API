@@ -23,6 +23,15 @@
 //     werden Mails nicht versendet, sondern in der Antwort zurueckgegeben
 //     (Trockenlauf). Am Produktiv-Skript ist STAGING nicht gesetzt — dort
 //     aendert sich am Verhalten der bestehenden Wege nichts.
+// v14 (Kontaktformular Deutsch/Englisch):
+//   Optionales Feld lang=de|en. Sonst der Pfad von Referer oder Origin, wenn
+//   er mit /en/ beginnt (auch genau /en). Default bleibt de — deutsche
+//   Formulare ohne das Feld laufen unveraendert.
+//   meldung, Bestaetigungsmail (Text und HTML) und die Danke-Weiterleitung
+//   folgen der Sprache. en ohne gueltige danke_url: https://kanid.de/en/thank-you/
+//   (andere erlaubte Origin, z. B. Staging: dieselbe Origin + /en/thank-you/).
+//   danke_url nur bei https auf kanid.de oder www.kanid.de, sonst ignoriert.
+//   Interne Mail an KANID bleibt deutsch, mit Vermerk der Sprache.
 
 const ERLAUBT = [
   'https://kanid.de',
@@ -32,6 +41,37 @@ const ERLAUBT = [
 const ERLAUBT_SUFFIX = '.app-ionos.space';
 const EMPFAENGER = 'info@kanid.de';
 const DANKE = 'https://kanid.de/danke';
+const DANKE_EN = 'https://kanid.de/en/thank-you/';
+
+// Sichtbare Kontakt-Texte. Deutsch bleibt der bisherige Wortlaut.
+const MELDUNGEN = {
+  de: {
+    method: 'Nur POST ist erlaubt.',
+    origin: 'Ungültige Herkunft.',
+    rate: 'Zu viele Nachrichten. Bitte in ein paar Minuten erneut versuchen.',
+    pflicht: 'Bitte füllen Sie alle Pflichtfelder aus.',
+    email: 'Bitte geben Sie eine gültige E-Mail-Adresse ein.',
+    config: 'Der Versand ist noch nicht eingerichtet (kein RESEND_API_KEY).',
+    mail: 'Die Nachricht konnte nicht versendet werden. Bitte schreiben Sie direkt an info@kanid.de.',
+    fallback: 'Die Nachricht konnte nicht gesendet werden.',
+    fehlerTitel: 'Fehler',
+    zurueck: 'Zurück',
+    zurueckHref: 'https://kanid.de/#kontakt',
+  },
+  en: {
+    method: 'Only POST is allowed.',
+    origin: 'Invalid origin.',
+    rate: 'Too many messages. Please try again in a few minutes.',
+    pflicht: 'Please fill in all required fields.',
+    email: 'Please enter a valid email address.',
+    config: 'Sending is not set up yet (no RESEND_API_KEY).',
+    mail: 'The message could not be sent. Please write directly to info@kanid.de.',
+    fallback: 'The message could not be sent.',
+    fehlerTitel: 'Error',
+    zurueck: 'Back',
+    zurueckHref: 'https://kanid.de/en/contact/',
+  },
+};
 
 const ARTEN = {
   konstruktion: { tag: 'Konstruktion', label: 'Konstruktionskapazität' },
@@ -84,17 +124,29 @@ function willJson(request) {
   return (request.headers.get('Accept') || '').includes('application/json');
 }
 
+function spracheCode(lang) {
+  return lang === 'en' ? 'en' : 'de';
+}
+
+function meldung(lang, key) {
+  return MELDUNGEN[spracheCode(lang)][key];
+}
+
 function antwort(request, data, status) {
   const origin = request.headers.get('Origin') || '';
+  const lang = data._lang === 'en' || data._lang === 'de' ? data._lang : spracheAusKopfzeilen(request);
+  const ausgabe = { ...data };
+  delete ausgabe._lang;
   if (willJson(request) || request.method !== 'POST') {
-    return json(data, status, origin);
+    return json(ausgabe, status, origin);
   }
-  if (data.ok) {
-    return Response.redirect(data.weiter || dankeFuer(origin), 303);
+  if (ausgabe.ok) {
+    return Response.redirect(ausgabe.weiter || dankeFuer(origin, lang), 303);
   }
-  const text = data.meldung || 'Die Nachricht konnte nicht gesendet werden.';
+  const texte = MELDUNGEN[spracheCode(lang)];
+  const text = ausgabe.meldung || texte.fallback;
   return new Response(
-    `<!DOCTYPE html><html lang="de"><meta charset="UTF-8"><title>Fehler</title><p>${text}</p><p><a href="https://kanid.de/#kontakt">Zurück</a></p>`,
+    `<!DOCTYPE html><html lang="${spracheCode(lang)}"><meta charset="UTF-8"><title>${texte.fehlerTitel}</title><p>${text}</p><p><a href="${texte.zurueckHref}">${texte.zurueck}</a></p>`,
     { status, headers: { ...corsHeaders(origin), 'Content-Type': 'text/html; charset=UTF-8' } },
   );
 }
@@ -108,9 +160,77 @@ function seitenOrigin(origin, request) {
   return o && originErlaubt(o) ? o : 'https://kanid.de';
 }
 
-function dankeFuer(origin) {
+function dankeFuer(origin, lang) {
   const o = seitenOrigin(origin);
+  if (lang === 'en') {
+    return o === 'https://kanid.de' ? DANKE_EN : `${o}/en/thank-you/`;
+  }
   return o === 'https://kanid.de' ? DANKE : `${o}/danke/`;
+}
+
+// Pfad /en/… oder genau /en. /enterprise bleibt deutsch.
+function pfadIstEnglisch(wert) {
+  if (!wert) return false;
+  try {
+    const pfad = new URL(wert).pathname || '/';
+    return pfad === '/en' || pfad.startsWith('/en/');
+  } catch {
+    return false;
+  }
+}
+
+function spracheAusKopfzeilen(request) {
+  if (pfadIstEnglisch(request.headers.get('Referer') || '')) return 'en';
+  if (pfadIstEnglisch(request.headers.get('Origin') || '')) return 'en';
+  return 'de';
+}
+
+function spracheAusFormular(form) {
+  if (!form || typeof form.get !== 'function') return '';
+  const roh = feld(form.get('lang'), 12).toLowerCase();
+  return roh === 'de' || roh === 'en' ? roh : '';
+}
+
+// Feld lang gewinnt. Sonst Referer, dann Origin, sonst de.
+function spracheBestimmen(request, form) {
+  return spracheAusFormular(form) || spracheAusKopfzeilen(request);
+}
+
+async function spracheFuer(request) {
+  if (request.method === 'POST') {
+    try {
+      const ausForm = spracheAusFormular(await request.clone().formData());
+      if (ausForm) return ausForm;
+    } catch {
+      // kein Formular-Body
+    }
+  }
+  return spracheAusKopfzeilen(request);
+}
+
+// Nur https auf kanid.de / www.kanid.de. Alles andere wird verworfen,
+// die Allowlist der Origins (inkl. Staging-Suffix) bleibt davon unberuehrt.
+function dankeUrlErlaubt(wert) {
+  if (typeof wert !== 'string') return '';
+  const roh = wert.trim();
+  if (!roh || roh.length > 500) return '';
+  if (/[\u0000-\u0020\\]/.test(roh)) return '';
+  let url;
+  try {
+    url = new URL(roh);
+  } catch {
+    return '';
+  }
+  if (url.protocol !== 'https:') return '';
+  if (url.username || url.password || url.port) return '';
+  const host = url.hostname;
+  if (host !== 'kanid.de' && host !== 'www.kanid.de') return '';
+  if (url.origin !== `https://${host}`) return '';
+  return url.href;
+}
+
+function dankeseite(origin, lang, dankeUrlFeld) {
+  return dankeUrlErlaubt(dankeUrlFeld) || dankeFuer(origin, lang);
 }
 
 function istStaging(env) {
@@ -204,7 +324,7 @@ async function pruefeTurnstile(token, ip, env) {
   }
 }
 
-function verwerfen(request, grund, info = {}) {
+function verwerfen(request, grund, info = {}, lang) {
   console.log(JSON.stringify({
     event: 'kontakt_verworfen',
     grund,
@@ -212,7 +332,9 @@ function verwerfen(request, grund, info = {}) {
     land: request.cf?.country || '',
     ...info,
   }));
-  return antwort(request, { ok: true, mail: true }, 200);
+  const daten = { ok: true, mail: true };
+  if (lang === 'en' || lang === 'de') daten._lang = lang;
+  return antwort(request, daten, 200);
 }
 
 async function sendeResend(apiKey, brief) {
@@ -272,7 +394,8 @@ function feldZelle(label, wert, breite) {
 
 // Neutral: uebernimmt bewusst KEINE Formulareingaben (Name, Firma, Nachricht),
 // damit das Formular nicht als Spam-Relay an fremde Adressen missbraucht wird.
-function bestaetigungHtml() {
+function bestaetigungHtml(lang) {
+  if (lang === 'en') return bestaetigungHtmlEn();
   const heute = new Date();
   const stand = heute.toISOString().slice(0, 7);
   const datum = heute.toISOString().slice(0, 10);
@@ -364,6 +487,139 @@ function bestaetigungHtml() {
   </table>
 </body>
 </html>`;
+}
+
+function bestaetigungHtmlEn() {
+  const heute = new Date();
+  const stand = heute.toISOString().slice(0, 7);
+  const datum = heute.toISOString().slice(0, 10);
+  const nummer = `KANID-MAIL-${datum.replace(/-/g, '')}`;
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Receipt confirmation</title>
+</head>
+<body style="margin:0;padding:0;background:#e9ecee;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" bgcolor="#e9ecee" style="background:#e9ecee;">
+    <tr>
+      <td align="center" style="padding:32px 12px;">
+        <table role="presentation" width="600" cellpadding="0" cellspacing="0" bgcolor="#ffffff" style="width:600px;max-width:600px;background:#ffffff;border:1px solid #0e2733;border-collapse:collapse;">
+
+          <tr>
+            <td style="padding:22px 24px 18px;border-bottom:1px solid #0e2733;">
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
+                <tr>
+                  <td width="220" style="vertical-align:middle;">
+                    <img src="https://kanid.de/assets/img/LOGO.png" width="176" height="48" alt="KANID" style="display:block;width:176px;height:auto;border:0;">
+                  </td>
+                  <td align="right" style="vertical-align:middle;font-family:Consolas,'Courier New',monospace;font-size:11px;letter-spacing:0.1em;text-transform:uppercase;color:#1b6ba4;line-height:1.55;">
+                    Receipt confirmation<br>
+                    ${htmlEsc(nummer)}
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+
+          <tr>
+            <td style="padding:28px 24px 8px;font-family:Consolas,'Courier New',monospace;font-size:11px;letter-spacing:0.14em;text-transform:uppercase;color:#1b6ba4;">
+              Message received
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:0 24px 16px;font-family:Arial,Helvetica,sans-serif;font-size:24px;line-height:1.2;font-weight:700;color:#0e2733;">
+              We have received your inquiry.
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:0 24px 22px;font-family:Arial,Helvetica,sans-serif;font-size:16px;line-height:1.55;color:#21262a;">
+              Hello,<br><br>
+              Your message has been received. This email only confirms receipt.
+              It is not an order confirmation and not an offer.
+            </td>
+          </tr>
+
+          <tr>
+            <td style="padding:0 24px 28px;font-family:Arial,Helvetica,sans-serif;font-size:16px;line-height:1.55;color:#21262a;">
+              We reply on business days within a few hours.<br><br>
+              Kind regards<br>
+              <strong style="color:#0e2733;">Konstantin Vinogradov</strong>
+            </td>
+          </tr>
+
+          <tr>
+            <td style="padding:0;">
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
+                <tr>
+                  ${feldZelle('KANID UG', 'Filderstadt', '25%')}
+                  ${feldZelle('Sheet', '01 / 01', '25%')}
+                  ${feldZelle('Date', stand, '25%')}
+                  ${feldZelle('Scale', '1:1', '25%')}
+                </tr>
+                <tr>
+                  ${feldZelle('Designation', 'Contact receipt confirmation', '50%')}
+                  ${feldZelle('Drawing number', nummer, '50%')}
+                </tr>
+                <tr>
+                  ${feldZelle('Author', 'K. Vinogradov', '50%')}
+                  ${feldZelle('Address', 'Heinrich-Hertz-Str. 11<br>70794 Filderstadt', '50%')}
+                </tr>
+                <tr>
+                  ${feldZelle('Register', 'HRB 798044 · Amtsgericht Stuttgart', '50%')}
+                  ${feldZelle('Contact', '+49 1520 7921611<br>info@kanid.de · kanid.de', '50%')}
+                </tr>
+              </table>
+            </td>
+          </tr>
+
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>`;
+}
+
+function bestaetigungText(lang) {
+  if (lang === 'en') {
+    return [
+      'Hello,',
+      '',
+      'thank you for your message to KANID. We have received it.',
+      'This email only confirms receipt — it is not an order confirmation and not an offer.',
+      '',
+      'We reply on business days within a few hours.',
+      '',
+      'If you did not write to us, you can ignore this email.',
+      '',
+      'KANID UG (haftungsbeschränkt)',
+      'Heinrich-Hertz-Str. 11',
+      '70794 Filderstadt',
+      'info@kanid.de · +49 1520 7921611',
+    ].join('\n');
+  }
+  return [
+    'Guten Tag,',
+    '',
+    'vielen Dank für Ihre Nachricht an KANID. Sie ist bei uns eingegangen.',
+    'Diese E-Mail bestätigt nur den Eingang — sie ist keine Auftragsbestätigung und kein Angebot.',
+    '',
+    'Wir antworten werktags innerhalb weniger Stunden.',
+    '',
+    'Falls Sie uns nicht geschrieben haben, können Sie diese E-Mail ignorieren.',
+    '',
+    'KANID UG (haftungsbeschränkt)',
+    'Heinrich-Hertz-Str. 11',
+    '70794 Filderstadt',
+    'info@kanid.de · +49 1520 7921611',
+  ].join('\n');
+}
+
+function bestaetigungBetreff(lang) {
+  return lang === 'en' ? 'Your message to KANID' : 'Ihre Nachricht an KANID';
 }
 
 const VERSAND_EUR = 6;
@@ -1685,7 +1941,7 @@ export default {
     const pfad = url.pathname.replace(/\/$/, '') || '/';
 
     if (request.method === 'GET' && (pfad === '/' || pfad === '/ping' || pfad === '/ping.php')) {
-      return json({ ok: true, runtime: 'cloudflare-worker', version: 13, time: new Date().toISOString() }, 200, origin);
+      return json({ ok: true, runtime: 'cloudflare-worker', version: 14, time: new Date().toISOString() }, 200, origin);
     }
 
     if (pfad === '/bestaetigen') {
@@ -1704,11 +1960,13 @@ export default {
     }
 
     if (request.method !== 'POST') {
-      return antwort(request, { ok: false, error: 'method', meldung: 'Nur POST ist erlaubt.' }, 405);
+      const lang = spracheAusKopfzeilen(request);
+      return antwort(request, { ok: false, error: 'method', meldung: meldung(lang, 'method'), _lang: lang }, 405);
     }
 
     if (!originErlaubt(origin)) {
-      return antwort(request, { ok: false, error: 'origin', meldung: 'Ungültige Herkunft.' }, 403);
+      const lang = await spracheFuer(request);
+      return antwort(request, { ok: false, error: 'origin', meldung: meldung(lang, 'origin'), _lang: lang }, 403);
     }
 
     if (pfad === '/bestellung') {
@@ -1725,14 +1983,16 @@ export default {
 
     const ip = clientIp(request);
     if (rateLimitUeberschritten(ip)) {
+      const lang = await spracheFuer(request);
       console.log(JSON.stringify({ event: 'kontakt_ratelimit', ip: ipKurz(ip) }));
-      return antwort(request, { ok: false, error: 'rate', meldung: 'Zu viele Nachrichten. Bitte in ein paar Minuten erneut versuchen.' }, 429);
+      return antwort(request, { ok: false, error: 'rate', meldung: meldung(lang, 'rate'), _lang: lang }, 429);
     }
 
     const form = await request.formData();
+    const lang = spracheBestimmen(request, form);
     const honeypot = feld(form.get('bot-field'), 80) + feld(form.get('_gotcha'), 80);
     if (honeypot) {
-      return verwerfen(request, 'honeypot');
+      return verwerfen(request, 'honeypot', {}, lang);
     }
 
     // Zeitfeld ist optional, solange die Website es nicht setzt.
@@ -1742,7 +2002,7 @@ export default {
       if (wert > 1e11) wert = Math.floor(wert / 1000); // Millisekunden toleriert
       const alter = Math.floor(Date.now() / 1000) - wert;
       if (alter >= 0 && alter < MIN_SEKUNDEN) {
-        return verwerfen(request, 'zu-schnell', { sekunden: alter });
+        return verwerfen(request, 'zu-schnell', { sekunden: alter }, lang);
       }
     }
 
@@ -1773,10 +2033,10 @@ export default {
     const quelle = QUELLEN.has(quelleRoh) ? quelleRoh : '';
 
     if (!name || !firma || !email || !artEintrag || !message) {
-      return antwort(request, { ok: false, error: 'validation', meldung: 'Bitte füllen Sie alle Pflichtfelder aus.' }, 422);
+      return antwort(request, { ok: false, error: 'validation', meldung: meldung(lang, 'pflicht'), _lang: lang }, 422);
     }
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-      return antwort(request, { ok: false, error: 'validation', meldung: 'Bitte geben Sie eine gültige E-Mail-Adresse ein.' }, 422);
+      return antwort(request, { ok: false, error: 'validation', meldung: meldung(lang, 'email'), _lang: lang }, 422);
     }
 
     const turnstile = await pruefeTurnstile(feld(form.get('cf-turnstile-response'), 2048), ip, env);
@@ -1789,7 +2049,7 @@ export default {
       ip: ipKurz(ip),
     }));
     if (!turnstile.ok && TURNSTILE_ERZWINGEN && !istStaging(env) && turnstile.grund !== 'fehler-siteverify') {
-      return verwerfen(request, `turnstile-${turnstile.grund}`);
+      return verwerfen(request, `turnstile-${turnstile.grund}`, {}, lang);
     }
 
     const gruende = spamGruende({ name, firma, message });
@@ -1797,14 +2057,15 @@ export default {
       return verwerfen(request, gruende.join(','), {
         domain: (email.split('@')[1] || '').toLowerCase(),
         laenge: message.length,
-      });
+      }, lang);
     }
 
     if (!versandBereit(env)) {
       return antwort(request, {
         ok: false,
         error: 'config',
-        meldung: 'Der Versand ist noch nicht eingerichtet (kein RESEND_API_KEY).',
+        meldung: meldung(lang, 'config'),
+        _lang: lang,
       }, 500);
     }
 
@@ -1826,6 +2087,7 @@ export default {
       einstieg ? `Einstieg: ${einstieg}` : null,
       `IP:      ${ip || 'unbekannt'}${request.cf?.country ? ` (${request.cf.country})` : ''}`,
       `Zeit:    ${new Date().toISOString()} UTC`,
+      `Sprache: ${lang === 'en' ? 'Englisch' : 'Deutsch'}`,
       `Bot-Check: ${turnstile.ok ? 'Turnstile ok' : `Turnstile ${turnstile.grund}`}`,
       '',
       'Nachricht:',
@@ -1844,34 +2106,20 @@ export default {
       return antwort(request, {
         ok: false,
         error: 'mail',
-        meldung: 'Die Nachricht konnte nicht versendet werden. Bitte schreiben Sie direkt an info@kanid.de.',
+        meldung: meldung(lang, 'mail'),
+        _lang: lang,
       }, 500);
     }
-
-    const bestaetigung = [
-      'Guten Tag,',
-      '',
-      'vielen Dank für Ihre Nachricht an KANID. Sie ist bei uns eingegangen.',
-      'Diese E-Mail bestätigt nur den Eingang — sie ist keine Auftragsbestätigung und kein Angebot.',
-      '',
-      'Wir antworten werktags innerhalb weniger Stunden.',
-      '',
-      'Falls Sie uns nicht geschrieben haben, können Sie diese E-Mail ignorieren.',
-      '',
-      'KANID UG (haftungsbeschränkt)',
-      'Heinrich-Hertz-Str. 11',
-      '70794 Filderstadt',
-      'info@kanid.de · +49 1520 7921611',
-    ].filter((zeile) => zeile !== null).join('\n');
 
     await sende(env, {
       from: 'KANID <info@kanid.de>',
       to: [email],
-      subject: 'Ihre Nachricht an KANID',
-      text: bestaetigung,
-      html: bestaetigungHtml(),
+      subject: bestaetigungBetreff(lang),
+      text: bestaetigungText(lang),
+      html: bestaetigungHtml(lang),
     });
 
-    return antwort(request, { ok: true, mail: true }, 200);
+    const ziel = dankeseite(origin, lang, form.get('danke_url'));
+    return antwort(request, { ok: true, mail: true, weiter: ziel }, 200);
   },
 };
