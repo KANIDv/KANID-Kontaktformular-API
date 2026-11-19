@@ -69,8 +69,112 @@ function willJson(): bool
     return str_contains($accept, 'application/json');
 }
 
+function pfadIstEnglisch(string $url): bool
+{
+    $teile = parse_url($url);
+    if (!is_array($teile)) {
+        return false;
+    }
+    $pfad = (string) ($teile['path'] ?? '');
+    return $pfad === '/en' || str_starts_with($pfad, '/en/');
+}
+
+// Feld lang gewinnt. Sonst Referer, dann Origin, sonst de.
+function spracheBestimmen(): string
+{
+    $roh = strtolower(feld('lang', 12));
+    if ($roh === 'de' || $roh === 'en') {
+        return $roh;
+    }
+    if (pfadIstEnglisch((string) ($_SERVER['HTTP_REFERER'] ?? ''))) {
+        return 'en';
+    }
+    if (pfadIstEnglisch(originAusRequest())) {
+        return 'en';
+    }
+    return 'de';
+}
+
+function kontaktText(string $lang, string $key): string
+{
+    $de = [
+        'method' => 'Nur POST ist erlaubt.',
+        'origin' => 'Ungültige Herkunft.',
+        'rate' => 'Zu viele Nachrichten. Bitte in ein paar Minuten erneut versuchen.',
+        'pflicht' => 'Bitte füllen Sie alle Pflichtfelder aus.',
+        'email' => 'Bitte geben Sie eine gültige E-Mail-Adresse ein.',
+        'mail' => 'Die Nachricht konnte nicht versendet werden. Bitte schreiben Sie direkt an info@kanid.de.',
+        'betreff' => 'Ihre Anfrage an KANID',
+        'fallback' => 'Die Nachricht konnte nicht gesendet werden.',
+    ];
+    $en = [
+        'method' => 'Only POST is allowed.',
+        'origin' => 'Invalid origin.',
+        'rate' => 'Too many messages. Please try again in a few minutes.',
+        'pflicht' => 'Please fill in all required fields.',
+        'email' => 'Please enter a valid email address.',
+        'mail' => 'The message could not be sent. Please write directly to info@kanid.de.',
+        'betreff' => 'Your inquiry to KANID',
+        'fallback' => 'The message could not be sent.',
+    ];
+    $map = $lang === 'en' ? $en : $de;
+    return $map[$key];
+}
+
+// Nur https auf kanid.de / www.kanid.de. Sonst leer — kein offener Redirect.
+function dankeUrlErlaubt(string $wert): string
+{
+    $wert = trim($wert);
+    if ($wert === '' || strlen($wert) > 500) {
+        return '';
+    }
+    if (preg_match('/[\x00-\x20\\\\]/', $wert)) {
+        return '';
+    }
+    $teile = parse_url($wert);
+    if (!is_array($teile)) {
+        return '';
+    }
+    $scheme = strtolower((string) ($teile['scheme'] ?? ''));
+    $host = strtolower((string) ($teile['host'] ?? ''));
+    if ($scheme !== 'https' || ($host !== 'kanid.de' && $host !== 'www.kanid.de')) {
+        return '';
+    }
+    if (isset($teile['user']) || isset($teile['pass'])) {
+        return '';
+    }
+    if (isset($teile['port']) && (int) $teile['port'] !== 443) {
+        return '';
+    }
+    $pfad = (string) ($teile['path'] ?? '/');
+    if ($pfad === '' || $pfad[0] !== '/') {
+        return '';
+    }
+    $ziel = 'https://' . $host . $pfad;
+    if (isset($teile['query']) && $teile['query'] !== '') {
+        $ziel .= '?' . $teile['query'];
+    }
+    if (isset($teile['fragment']) && $teile['fragment'] !== '') {
+        $ziel .= '#' . $teile['fragment'];
+    }
+    return $ziel;
+}
+
+function dankeZiel(array $config, string $lang): string
+{
+    $ausFeld = dankeUrlErlaubt(feld('danke_url', 500));
+    if ($ausFeld !== '') {
+        return $ausFeld;
+    }
+    if ($lang === 'en') {
+        return 'https://kanid.de/en/thank-you/';
+    }
+    return (string) $config['danke_url'];
+}
+
 function antwort(array $config, int $status, array $payload): never
 {
+    $lang = spracheBestimmen();
     corsHeaderSetzen($config);
     http_response_code($status);
     header('Cache-Control: no-store');
@@ -84,12 +188,21 @@ function antwort(array $config, int $status, array $payload): never
 
     header('Content-Type: text/html; charset=UTF-8');
     if (!empty($payload['ok'])) {
-        header('Location: ' . (string) $config['danke_url'], true, 303);
+        header('Location: ' . dankeZiel($config, $lang), true, 303);
         exit;
     }
 
-    $text = htmlspecialchars((string) ($payload['meldung'] ?? 'Die Nachricht konnte nicht gesendet werden.'), ENT_QUOTES, 'UTF-8');
-    $zurueck = htmlspecialchars((string) ($config['erlaubte_origins'][0] ?? 'https://kanid.de') . '/#kontakt', ENT_QUOTES, 'UTF-8');
+    $fallback = kontaktText($lang, 'fallback');
+    $text = htmlspecialchars((string) ($payload['meldung'] ?? $fallback), ENT_QUOTES, 'UTF-8');
+    $basis = (string) ($config['erlaubte_origins'][0] ?? 'https://kanid.de');
+    if ($lang === 'en') {
+        $zurueck = htmlspecialchars($basis . '/en/contact/', ENT_QUOTES, 'UTF-8');
+        echo '<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><title>Error</title></head><body>';
+        echo '<p>' . $text . '</p><p><a href="' . $zurueck . '">Back to the form</a></p></body></html>';
+        exit;
+    }
+
+    $zurueck = htmlspecialchars($basis . '/#kontakt', ENT_QUOTES, 'UTF-8');
     echo '<!DOCTYPE html><html lang="de"><head><meta charset="UTF-8"><title>Fehler</title></head><body>';
     echo '<p>' . $text . '</p><p><a href="' . $zurueck . '">Zurück zum Formular</a></p></body></html>';
     exit;
